@@ -51,9 +51,9 @@ export async function runAddFlow(
   // doesn't lose name/type and have to start over from the menu.
   let schedule: string | undefined;
   let intervalMs: number | undefined;
-  let placeholder = placeholders[jobType];
+  let title = "Schedule";
   while (true) {
-    const raw = await ctx.ui.input("Schedule", placeholder);
+    const raw = await ctx.ui.input(title, placeholders[jobType]);
     if (!raw) return;
     const result = CronScheduler.validateSchedule(jobType, raw.trim());
     if (result.ok) {
@@ -61,7 +61,9 @@ export async function runAddFlow(
       intervalMs = result.intervalMs;
       break;
     }
-    placeholder = result.error;
+    // The input component ignores the placeholder, so surface the error in
+    // the title - where the dialog always renders it - to keep it visible.
+    title = `Schedule — ${result.error}`;
   }
 
   const prompt = await ctx.ui.input("Prompt", "Enter the prompt to execute");

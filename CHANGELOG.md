@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `schedule_prompt` is now **inactive by default** (opt-in activation): at `session_start` the tool is removed from the active tool set while every other active tool is preserved, so the agent cannot schedule prompts until the user runs `/schedule-prompt`, which re-activates it (deduplicated) for the session
+
+### Fixed
+- Interactive schedule creation now keeps validation errors visible when re-prompting for an invalid schedule
+
 ## [0.4.1] - 2026-06-23
 
 ### Added

@@ -18,6 +18,7 @@ Schedule future prompts with natural language:
 
 ### Core `schedule_prompt` Tool
 
+- **Opt-in activation**: the tool is **inactive by default** — it is removed from the active tool set at session start (all other tools stay active) and activated by running `/schedule-prompt`
 - **Natural language scheduling**: "schedule X in 5 minutes", "every hour do Y"
 - **Multiple formats**: Cron expressions, intervals, ISO timestamps, relative time (+5m, +1h)
 - **Job types**:
@@ -83,9 +84,13 @@ Then run `pi` normally; the extension auto-discovers.
 
 ## Usage
 
-### LLM-driven (automatic)
+### Activation (opt-in)
 
-The agent automatically uses `schedule_prompt` when you want to schedule, defer, or be reminded:
+`schedule_prompt` is **inactive by default**. At session start the extension drops it from the active tool set (every other active tool is preserved), so the agent cannot schedule anything until you opt in. Run `/schedule-prompt` to activate the tool for the session.
+
+### LLM-driven (after activation)
+
+Once activated with `/schedule-prompt`, the agent uses `schedule_prompt` automatically when you want to schedule, defer, or be reminded:
 
 ```
 You: Remind me to check the deployment logs in 10 minutes
@@ -105,7 +110,7 @@ The widget displays below your editor (only when jobs exist):
 
 ### Manual commands
 
-`/schedule-prompt` opens a two-item menu:
+`/schedule-prompt` activates the `schedule_prompt` tool for the session (the opt-in for the default-disabled tool) and opens a two-item menu:
 
 - **Jobs** — full-screen overlay listing every scheduled prompt in this cwd. Your session's jobs are at the top; jobs bound to other sessions render read-only below. Hotkeys: `↑`/`↓` select, `a` add (opens the input series — name/type/schedule/prompt/scope/confirm), `t` toggle enabled, `s` toggle scope (session-bound ↔ shared with all pi sessions in this cwd), `x` remove (with `y/n` confirm), `c` cleanup all disabled jobs, `q`/`esc` close.
 - **Settings** — widget visibility and the default scope for new jobs (`Bind new jobs to session: yes/no`). Persists across sessions.
