@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Cron } from "croner";
+import { DEFAULT_COORDINATOR_DIR, isPidAlive, readSessionRecord } from "./coordinator.js";
 import type { CronStorage } from "./storage.js";
 import { runSubagentOnce, type SubagentResult } from "./subagent.js";
 import type { CronChangeEvent, CronJob, CronJobType } from "./types.js";
@@ -11,6 +12,26 @@ type ValidateScheduleResult =
   | { ok: false; error: string };
 
 const SUBAGENT_OUTPUT_SNIPPET_LENGTH = 500;
+
+/** How often a process scans shared storage for wait jobs it can deliver. */
+const WAIT_POLL_INTERVAL_MS = 1000;
+
+/**
+ * Whether pi-subagents has a live or queued agent in this process. The global
+ * registry is process-local and absent when pi-subagents is not loaded, in
+ * which case nothing can be running here.
+ */
+function hasRunningSubagents(): boolean {
+  const manager = (globalThis as { [key: symbol]: unknown })[Symbol.for("pi-subagents:manager")];
+  if (!manager || typeof (manager as { hasRunning?: unknown }).hasRunning !== "function") {
+    return false;
+  }
+  try {
+    return (manager as { hasRunning: () => boolean }).hasRunning() === true;
+  } catch {
+    return false;
+  }
+}
 
 /** Truncate `text` to `SUBAGENT_OUTPUT_SNIPPET_LENGTH`, appending an ellipsis if cut. */
 function snippet(text: string): string {
@@ -26,14 +47,22 @@ export class CronScheduler {
   private jobs = new Map<string, Cron>();
   private intervals = new Map<string, NodeJS.Timeout>();
   private activeSubagents = new Set<AbortController>();
+  private waitPoll?: NodeJS.Timeout;
   private readonly storage: CronStorage;
   private readonly pi: ExtensionAPI;
   private readonly ctx: ExtensionContext;
+  private readonly coordinatorDir: string;
 
-  constructor(storage: CronStorage, pi: ExtensionAPI, ctx: ExtensionContext) {
+  constructor(
+    storage: CronStorage,
+    pi: ExtensionAPI,
+    ctx: ExtensionContext,
+    coordinatorDir: string = DEFAULT_COORDINATOR_DIR,
+  ) {
     this.storage = storage;
     this.pi = pi;
     this.ctx = ctx;
+    this.coordinatorDir = coordinatorDir;
   }
 
   /**
@@ -55,10 +84,13 @@ export class CronScheduler {
         this.scheduleJob(job);
       }
     }
+    this.startWaitPolling();
   }
 
-  /** Unbound jobs (no `session` field) load for everyone. */
+  /** Unbound jobs (no `session` field) load for everyone. Wait jobs also load
+   *  for their owner so it can run the exit fallback and manage the job. */
   static isLoadedFor(job: CronJob, sessionId: string | undefined): boolean {
+    if (job.ownerSession !== undefined && job.ownerSession === sessionId) return true;
     return !job.session || job.session === sessionId;
   }
 
@@ -66,6 +98,11 @@ export class CronScheduler {
    * Stop all scheduled jobs
    */
   stop(): void {
+    if (this.waitPoll) {
+      clearInterval(this.waitPoll);
+      this.waitPoll = undefined;
+    }
+
     // Stop all cron jobs
     for (const cron of this.jobs.values()) {
       cron.stop();
@@ -93,6 +130,7 @@ export class CronScheduler {
     if (job.enabled) {
       this.scheduleJob(job);
     }
+    this.startWaitPolling();
     this.emitChange({ type: "add", job });
   }
 
@@ -112,6 +150,7 @@ export class CronScheduler {
     if (updated.enabled) {
       this.scheduleJob(updated);
     }
+    this.startWaitPolling();
     this.emitChange({ type: "update", job: updated });
   }
 
@@ -131,6 +170,9 @@ export class CronScheduler {
    * Schedule a single job
    */
   private scheduleJob(job: CronJob): void {
+    // Wait jobs have no clock time: they are delivered by the shared poller
+    // (see `evaluateWaitJobs`), not armed on a timer here.
+    if (job.type === "wait") return;
     try {
       if (job.type === "interval" && job.intervalMs) {
         // Interval-based scheduling
@@ -197,6 +239,102 @@ export class CronScheduler {
     if (interval) {
       clearInterval(interval);
       this.intervals.delete(id);
+    }
+  }
+
+  /**
+   * Arm the shared wait-job poller. Every session polls from start: a wait job
+   * is normally created by another process after this one is already running,
+   * so local storage at start is not a reliable signal that no wait job will
+   * ever target this session. Each tick re-reads shared storage and delivers
+   * only jobs this session targets or owns; `stop()` clears the timer.
+   */
+  private startWaitPolling(): void {
+    if (this.waitPoll) return;
+    this.waitPoll = setInterval(() => {
+      void this.evaluateWaitJobs();
+    }, WAIT_POLL_INTERVAL_MS);
+  }
+
+  /**
+   * Scan shared storage for wait jobs this session can deliver. Persisted
+   * storage is the rendezvous: the target process delivers once the target is
+   * settled and this process has no running pi-subagents; the owner process
+   * delivers the fallback once the target has exited.
+   */
+  private evaluateWaitJobs(): void {
+    const mySessionId = this.ctx.sessionManager.getSessionId();
+    for (const job of this.storage.getAllJobs()) {
+      if (job.type !== "wait" || !job.enabled) continue;
+      if (!CronScheduler.isLoadedFor(job, mySessionId)) continue;
+      this.evaluateWaitJob(job, mySessionId);
+    }
+  }
+
+  private evaluateWaitJob(job: CronJob, mySessionId: string | undefined): void {
+    // Target path wins when this session is both target and owner (self-wait).
+    if (job.session !== undefined && job.session === mySessionId) {
+      const record = readSessionRecord(this.coordinatorDir, job.session);
+      const settled = record?.status === "settled" && isPidAlive(record.pid);
+      if (settled && !hasRunningSubagents()) {
+        this.deliverWaitJob(job, "wait_delivery");
+      }
+      return;
+    }
+
+    // Owner fallback: the target can no longer deliver, so take over here.
+    if (job.ownerSession !== undefined && job.ownerSession === mySessionId) {
+      if (this.targetExited(job.session)) {
+        this.deliverWaitJob(job, "wait_fallback");
+      }
+    }
+  }
+
+  /** True only when a tracked target is marked exited or its process has died. */
+  private targetExited(target: string | undefined): boolean {
+    if (!target) return false;
+    const record = readSessionRecord(this.coordinatorDir, target);
+    if (!record) return false;
+    return record.status === "exited" || !isPidAlive(record.pid);
+  }
+
+  /**
+   * Deliver a wait job into this chat exactly once. Disabling first claims the
+   * job so a later poll tick (or the other process) cannot re-deliver it; a
+   * failed delivery stays disabled with an error, per the no-re-fire contract.
+   */
+  private deliverWaitJob(job: CronJob, mode: "wait_delivery" | "wait_fallback"): void {
+    const fresh = this.storage.getJob(job.id);
+    if (!fresh?.enabled) return;
+    this.storage.updateJob(job.id, { enabled: false });
+
+    try {
+      // Same empty-content marker as the inline path: no delivery options, so
+      // the marker never injects the prompt a second time.
+      this.pi.sendMessage({
+        customType: "scheduled_prompt",
+        content: [],
+        display: true,
+        details: { jobId: job.id, jobName: job.name, prompt: fresh.prompt, mode },
+      });
+      this.pi.sendUserMessage(fresh.prompt, { deliverAs: "followUp" });
+      this.storage.updateJob(job.id, {
+        lastRun: new Date().toISOString(),
+        lastStatus: "success",
+        runCount: fresh.runCount + 1,
+      });
+      this.emitChange({ type: "fire", job: { ...fresh, enabled: false } });
+    } catch (error) {
+      console.error(`Failed to deliver wait job ${job.id}:`, error);
+      this.storage.updateJob(job.id, {
+        lastRun: new Date().toISOString(),
+        lastStatus: "error",
+      });
+      this.emitChange({
+        type: "error",
+        jobId: job.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -538,6 +676,7 @@ export class CronScheduler {
    * returned by `validateSchedule` (ISO for `once`).
    */
   static describeSchedule(type: CronJobType, schedule: string): string {
+    if (type === "wait") return "waits for target session";
     if (type === "interval") return `every ${schedule}`;
     if (type === "once") {
       const date = new Date(schedule);

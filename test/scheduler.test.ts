@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CronScheduler } from "../src/scheduler.js";
 import type { CronJob } from "../src/types.js";
 
@@ -694,5 +697,329 @@ describe("CronScheduler — extensions/skills", () => {
 
     const options = mockRunSubagentOnce.mock.calls[0][4];
     expect(options).toEqual({ extensions: false, skills: undefined });
+  });
+});
+
+describe("CronScheduler — wait jobs", () => {
+  const MANAGER_KEY = Symbol.for("pi-subagents:manager");
+  let originalManager: unknown;
+
+  beforeEach(() => {
+    originalManager = (globalThis as any)[MANAGER_KEY];
+  });
+
+  afterEach(() => {
+    if (originalManager === undefined) delete (globalThis as any)[MANAGER_KEY];
+    else (globalThis as any)[MANAGER_KEY] = originalManager;
+  });
+
+  /** Write one coordinator record file per entry into a temp state dir. */
+  function makeCoordinatorDir(
+    records: Array<{ sessionId: string; status: string; pid: number }>,
+  ): string {
+    const dir = mkdtempSync(join(tmpdir(), "sched-wait-"));
+    for (const r of records) {
+      writeFileSync(
+        join(dir, `${encodeURIComponent(r.sessionId)}.json`),
+        JSON.stringify({ sessionId: r.sessionId, cwd: "/tmp", pid: r.pid, status: r.status }),
+      );
+    }
+    return dir;
+  }
+
+  function setSubagentManager(manager: unknown): void {
+    (globalThis as any)[MANAGER_KEY] = manager;
+  }
+
+  function waitJob(overrides: Partial<CronJob> = {}): CronJob {
+    return exampleJob({
+      id: "wait-1",
+      type: "wait",
+      schedule: "wait",
+      session: "target-session",
+      ownerSession: "owner-session",
+      ...overrides,
+    });
+  }
+
+  it("target delivers once when its coordinator record is settled and pi-subagents is idle", () => {
+    const dir = makeCoordinatorDir([
+      { sessionId: "target-session", status: "settled", pid: process.pid },
+    ]);
+    setSubagentManager({ hasRunning: () => false });
+    const pi = makePi();
+    const storage = makeStorage([waitJob()]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("target-session"), dir);
+
+    (scheduler as any).evaluateWaitJobs();
+
+    expect(pi.sendMessage).toHaveBeenCalledTimes(1);
+    const [marker, markerOpts] = pi.sendMessage.mock.calls[0];
+    expect(marker.details.mode).toBe("wait_delivery");
+    // Empty content + no options mirrors the inline path: no double injection.
+    expect(marker.content).toEqual([]);
+    expect(markerOpts).toBeUndefined();
+    expect(pi.sendUserMessage).toHaveBeenCalledWith("do the thing", { deliverAs: "followUp" });
+
+    const delivered = storage.getJob("wait-1");
+    expect(delivered.enabled).toBe(false);
+    expect(delivered.lastStatus).toBe("success");
+    expect(delivered.runCount).toBe(1);
+    expect(delivered.lastRun).toBeDefined();
+  });
+
+  it("delivers once: a second poll does not re-deliver", () => {
+    const dir = makeCoordinatorDir([
+      { sessionId: "target-session", status: "settled", pid: process.pid },
+    ]);
+    setSubagentManager({ hasRunning: () => false });
+    const pi = makePi();
+    const storage = makeStorage([waitJob()]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("target-session"), dir);
+
+    (scheduler as any).evaluateWaitJobs();
+    (scheduler as any).evaluateWaitJobs();
+
+    expect(pi.sendMessage).toHaveBeenCalledTimes(1);
+    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("target does not deliver while its coordinator record is working", () => {
+    const dir = makeCoordinatorDir([
+      { sessionId: "target-session", status: "working", pid: process.pid },
+    ]);
+    setSubagentManager({ hasRunning: () => false });
+    const pi = makePi();
+    const storage = makeStorage([waitJob()]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("target-session"), dir);
+
+    (scheduler as any).evaluateWaitJobs();
+
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("target does not deliver while pi-subagents has a running agent", () => {
+    const dir = makeCoordinatorDir([
+      { sessionId: "target-session", status: "settled", pid: process.pid },
+    ]);
+    setSubagentManager({ hasRunning: () => true });
+    const pi = makePi();
+    const storage = makeStorage([waitJob()]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("target-session"), dir);
+
+    (scheduler as any).evaluateWaitJobs();
+
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("target does not deliver when the settled record's pid is dead", () => {
+    const dir = makeCoordinatorDir([
+      { sessionId: "target-session", status: "settled", pid: 0 },
+    ]);
+    setSubagentManager({ hasRunning: () => false });
+    const pi = makePi();
+    const storage = makeStorage([waitJob()]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("target-session"), dir);
+
+    (scheduler as any).evaluateWaitJobs();
+
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("target does not deliver when its coordinator record is missing", () => {
+    const dir = makeCoordinatorDir([]);
+    setSubagentManager({ hasRunning: () => false });
+    const pi = makePi();
+    const storage = makeStorage([waitJob()]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("target-session"), dir);
+
+    (scheduler as any).evaluateWaitJobs();
+
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a missing pi-subagents manager as busy (delivers when settled)", () => {
+    const dir = makeCoordinatorDir([
+      { sessionId: "target-session", status: "settled", pid: process.pid },
+    ]);
+    // No globalThis manager registered - pi-subagents is not loaded here.
+    const pi = makePi();
+    const storage = makeStorage([waitJob()]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("target-session"), dir);
+
+    (scheduler as any).evaluateWaitJobs();
+
+    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("owner delivers fallback when the target record is exited", () => {
+    const dir = makeCoordinatorDir([
+      { sessionId: "target-session", status: "exited", pid: process.pid },
+    ]);
+    const pi = makePi();
+    const storage = makeStorage([waitJob()]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("owner-session"), dir);
+
+    (scheduler as any).evaluateWaitJobs();
+
+    const [marker] = pi.sendMessage.mock.calls[0];
+    expect(marker.details.mode).toBe("wait_fallback");
+    expect(pi.sendUserMessage).toHaveBeenCalledWith("do the thing", { deliverAs: "followUp" });
+    expect(storage.getJob("wait-1").enabled).toBe(false);
+    expect(storage.getJob("wait-1").lastStatus).toBe("success");
+  });
+
+  it("owner keeps waiting when the target coordinator record is missing", () => {
+    const dir = makeCoordinatorDir([]);
+    const pi = makePi();
+    const storage = makeStorage([waitJob()]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("owner-session"), dir);
+
+    (scheduler as any).evaluateWaitJobs();
+
+    expect(pi.sendMessage).not.toHaveBeenCalled();
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+    expect(storage.getJob("wait-1").enabled).toBe(true);
+  });
+
+  it("owner does not fall back while the target is alive and settled", () => {
+    const dir = makeCoordinatorDir([
+      { sessionId: "target-session", status: "settled", pid: process.pid },
+    ]);
+    const pi = makePi();
+    const storage = makeStorage([waitJob()]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("owner-session"), dir);
+
+    (scheduler as any).evaluateWaitJobs();
+
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("self-wait (target === owner) delivers through the target path when settled", () => {
+    const dir = makeCoordinatorDir([
+      { sessionId: "test-session", status: "settled", pid: process.pid },
+    ]);
+    setSubagentManager({ hasRunning: () => false });
+    const pi = makePi();
+    const storage = makeStorage([
+      waitJob({ session: "test-session", ownerSession: "test-session" }),
+    ]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("test-session"), dir);
+
+    (scheduler as any).evaluateWaitJobs();
+
+    expect(pi.sendMessage.mock.calls[0][0].details.mode).toBe("wait_delivery");
+    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("disabled wait jobs are skipped", () => {
+    const dir = makeCoordinatorDir([
+      { sessionId: "target-session", status: "settled", pid: process.pid },
+    ]);
+    setSubagentManager({ hasRunning: () => false });
+    const pi = makePi();
+    const storage = makeStorage([waitJob({ enabled: false })]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("target-session"), dir);
+
+    (scheduler as any).evaluateWaitJobs();
+
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("isLoadedFor: a wait job loads for both its target and its owner", () => {
+    const job = waitJob();
+    expect(CronScheduler.isLoadedFor(job, "target-session")).toBe(true);
+    expect(CronScheduler.isLoadedFor(job, "owner-session")).toBe(true);
+    expect(CronScheduler.isLoadedFor(job, "other-session")).toBe(false);
+  });
+
+  it("start() arms the wait poller and stop() clears it", () => {
+    const dir = makeCoordinatorDir([]);
+    const pi = makePi();
+    const storage = makeStorage([]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("target-session"), dir);
+
+    try {
+      scheduler.start();
+      expect((scheduler as any).waitPoll).toBeDefined();
+    } finally {
+      scheduler.stop();
+    }
+    expect((scheduler as any).waitPoll).toBeUndefined();
+  });
+
+  it("start() arms polling even with no local wait job, so foreign jobs are not delivered", () => {
+    const dir = makeCoordinatorDir([
+      { sessionId: "other-target", status: "settled", pid: process.pid },
+    ]);
+    setSubagentManager({ hasRunning: () => false });
+    const pi = makePi();
+    const storage = makeStorage([
+      waitJob({ session: "other-target", ownerSession: "other-owner" }),
+    ]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("unrelated-session"), dir);
+
+    try {
+      scheduler.start();
+      expect((scheduler as any).waitPoll).toBeDefined();
+      (scheduler as any).evaluateWaitJobs();
+      // Armed for discovery, but a job for another session is never delivered here.
+      expect(pi.sendUserMessage).not.toHaveBeenCalled();
+    } finally {
+      scheduler.stop();
+    }
+  });
+
+  it("discovers a wait job added by another process after this session started (#regression)", () => {
+    vi.useFakeTimers();
+    try {
+      const dir = makeCoordinatorDir([
+        { sessionId: "target-session", status: "settled", pid: process.pid },
+      ]);
+      setSubagentManager({ hasRunning: () => false });
+      const pi = makePi();
+      // Target starts with no wait job locally: shared storage is empty.
+      const storage = makeStorage([]);
+      const scheduler = new CronScheduler(storage, pi, makeCtx("target-session"), dir);
+      scheduler.start();
+      expect(pi.sendUserMessage).not.toHaveBeenCalled();
+
+      // The owner process (elsewhere) creates the job after start. Same shared
+      // storage object models the shared on-disk store.
+      storage.addJob(waitJob());
+
+      // The target's poller must discover it on the next tick and deliver.
+      vi.advanceTimersByTime(1000);
+
+      expect(pi.sendMessage.mock.calls[0][0].details.mode).toBe("wait_delivery");
+      expect(pi.sendUserMessage).toHaveBeenCalledWith("do the thing", { deliverAs: "followUp" });
+      expect(storage.getJob("wait-1").enabled).toBe(false);
+      scheduler.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a failed delivery marks the job error and stays disabled (no re-fire)", () => {
+    const dir = makeCoordinatorDir([
+      { sessionId: "target-session", status: "settled", pid: process.pid },
+    ]);
+    setSubagentManager({ hasRunning: () => false });
+    const pi = makePi();
+    pi.sendUserMessage = vi.fn(() => {
+      throw new Error("pi is stale (simulated teardown)");
+    });
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const storage = makeStorage([waitJob()]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("target-session"), dir);
+
+    (scheduler as any).evaluateWaitJobs();
+    (scheduler as any).evaluateWaitJobs();
+
+    const failed = storage.getJob("wait-1");
+    expect(failed.enabled).toBe(false);
+    expect(failed.lastStatus).toBe("error");
+    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
+    consoleSpy.mockRestore();
   });
 });

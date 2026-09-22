@@ -1,26 +1,61 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { nanoid } from "nanoid";
+import { DEFAULT_COORDINATOR_DIR, readSessionRecord } from "./coordinator.js";
 import { CronScheduler } from "./scheduler.js";
 import type { JobScope } from "./settings.js";
 import type { CronStorage } from "./storage.js";
-import type { CronJob, CronJobType, CronToolDetails, } from "./types.js";
-import { CronToolParams } from "./types.js";
+import type { CronJob, CronJobType, CronToolDetails } from "./types.js";
+import { CronToolParams, WAIT_SCHEDULE } from "./types.js";
+
+interface WaitTargetResult {
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * Reject an explicit wait target that the coordinator does not track, or that
+ * runs in a different working directory than the creator. Wait jobs deliver
+ * inline, and a cross-cwd/target-less job could never observe the session it
+ * waits for.
+ */
+function validateWaitTarget(
+  sessionId: string,
+  cwd: string,
+  coordinatorDir: string,
+): WaitTargetResult {
+  const record = readSessionRecord(coordinatorDir, sessionId);
+  if (!record || record.sessionId !== sessionId) {
+    return {
+      ok: false,
+      error: `Target session is not tracked by the coordinator: ${sessionId}. Start it first, or omit 'session' to wait for the current session.`,
+    };
+  }
+  if (record.cwd !== cwd) {
+    return {
+      ok: false,
+      error: `Target session ${sessionId} runs in a different working directory (${record.cwd}); wait targets must share the creator's cwd (${cwd}).`,
+    };
+  }
+  return { ok: true };
+}
 
 /**
  * Create the schedule_prompt tool definition.
  * `getDefaultScope` is a getter so live setting toggles affect the next `add`.
+ * `coordinatorDir` is injectable so tests can use a temp directory.
  */
 export function createCronTool(
   getStorage: () => CronStorage,
   getScheduler: () => CronScheduler,
   getDefaultScope: () => JobScope = () => "session",
+  coordinatorDir: string = DEFAULT_COORDINATOR_DIR,
 ): ToolDefinition<typeof CronToolParams, CronToolDetails> {
   return {
     name: "schedule_prompt",
     label: "Schedule Prompt",
     description:
-      "IMPORTANT: For action='add', you MUST provide both 'schedule' parameter AND 'prompt' parameter. Schedule prompts at times/intervals. Schedule formats: 6-field cron (with seconds: '0 * * * * *' = every minute), ISO timestamp, relative time (+10s, +5m, +1h), or interval (5m, 1h). Type defaults to 'cron', use 'once' for relative/ISO times. Actions: add (needs schedule+prompt), list, remove/enable/disable/update (need jobId), cleanup.",
+      "IMPORTANT: For action='add', you MUST provide both 'schedule' parameter AND 'prompt' parameter (schedule is not needed for type='wait'). Schedule prompts at times/intervals. Schedule formats: 6-field cron (with seconds: '0 * * * * *' = every minute), ISO timestamp, relative time (+10s, +5m, +1h), or interval (5m, 1h). Type defaults to 'cron', use 'once' for relative/ISO times, or 'wait' (one-shot, inline, no schedule) to deliver once the target session is idle (no running pi-subagents), with a fallback in the creating session if the target exits first. Actions: add (needs schedule+prompt), list, remove/enable/disable/update (need jobId), cleanup.",
     parameters: CronToolParams,
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -51,16 +86,21 @@ export function createCronTool(
       try {
         switch (action) {
           case "add": {
-            if (!params.schedule || !params.prompt) {
-              const missing = [];
-              if (!params.schedule) missing.push("'schedule'");
-              if (!params.prompt) missing.push("'prompt'");
+            const type = (params.type || "cron") as CronJobType;
+            const isWait = type === "wait";
+
+            if (!params.prompt) {
               throw new Error(
-                `Missing required parameters for add action: ${missing.join(" and ")}. You must provide both schedule (e.g., '+10s', '*/5 * * * * *') and prompt (the text to execute).`
+                "Missing required parameter for add action: 'prompt'. Provide the text to execute."
+              );
+            }
+            if (!isWait && !params.schedule) {
+              throw new Error(
+                "Missing required parameter for add action: 'schedule'. Provide a schedule (e.g., '+10s', '*/5 * * * * *')."
               );
             }
 
-            // Defense-in-depth — the schema also enforces this with minLength: 1,
+            // Defense-in-depth - the schema also enforces this with minLength: 1,
             // but tool callers can bypass the schema by passing params directly.
             if (params.model !== undefined && params.model.length === 0) {
               throw new Error(
@@ -78,15 +118,41 @@ export function createCronTool(
               );
             }
 
-            const type = (params.type || "cron") as CronJobType;
-            const validated = CronScheduler.validateSchedule(type, params.schedule);
-            if (!validated.ok) throw new Error(validated.error);
-            const schedule = validated.schedule;
-            const intervalMs = validated.intervalMs;
+            // Wait jobs deliver inline into the target/creating session, so they
+            // have no subagent mode to run in.
+            if (isWait && params.model !== undefined) {
+              throw new Error("'wait' jobs run inline only and do not accept a 'model'.");
+            }
+
+            // Defense-in-depth - the schema enforces minLength: 1, but direct
+            // callers can bypass the schema.
+            if (isWait && params.session !== undefined && params.session.length === 0) {
+              throw new Error("'session' must be a non-empty string.");
+            }
+
+            const mySessionId = ctx.sessionManager.getSessionId();
+
+            // Wait jobs have no clock time: `schedule` is a sentinel and an
+            // explicit target must be a tracked session in the same cwd.
+            let schedule: string;
+            let intervalMs: number | undefined;
+            let session: string | undefined;
+            if (isWait) {
+              if (params.session !== undefined) {
+                const target = validateWaitTarget(params.session, ctx.cwd, coordinatorDir);
+                if (!target.ok) throw new Error(target.error);
+              }
+              schedule = WAIT_SCHEDULE;
+              session = params.session ?? mySessionId;
+            } else {
+              const validated = CronScheduler.validateSchedule(type, params.schedule as string);
+              if (!validated.ok) throw new Error(validated.error);
+              schedule = validated.schedule;
+              intervalMs = validated.intervalMs;
+              session = getDefaultScope() === "session" ? mySessionId : undefined;
+            }
 
             const now = new Date().toISOString();
-            const session =
-              getDefaultScope() === "session" ? ctx.sessionManager.getSessionId() : undefined;
             const job: CronJob = {
               id: nanoid(10),
               name: jobName,
@@ -103,6 +169,7 @@ export function createCronTool(
               extensions: params.extensions,
               skills: params.skills,
               session,
+              ownerSession: isWait ? mySessionId : undefined,
             };
 
             storage.addJob(job);
@@ -114,11 +181,14 @@ export function createCronTool(
             const modelLine = job.model
               ? `\nModel: ${job.model} (runs in subagent${job.notify ? ", notifies parent" : ""}${job.extensions ? ", extensions" : ""}${job.skills ? ", skills" : ""})`
               : "";
+            const waitLine = isWait
+              ? `\nWaits for session: ${job.session}\nOwner session: ${job.ownerSession}`
+              : `\nSchedule: ${job.schedule}`;
             return {
               content: [
                 {
                   type: "text",
-                  text: `✓ Created cron job "${job.name}" (${job.id})\nType: ${job.type}\nSchedule: ${job.schedule}\nPrompt: ${job.prompt}${modelLine}`,
+                  text: `✓ Created cron job "${job.name}" (${job.id})\nType: ${job.type}${waitLine}\nPrompt: ${job.prompt}${modelLine}`,
                 },
               ],
               details,
@@ -234,6 +304,15 @@ export function createCronTool(
               throw new Error(`Job not found: ${params.jobId}`);
             }
 
+            if (job.type === "wait" && params.schedule) {
+              throw new Error(
+                "'wait' jobs have no schedule; they deliver once the target session is idle, with an owner fallback if the target exits first."
+              );
+            }
+            if (job.type === "wait" && params.model !== undefined) {
+              throw new Error("'wait' jobs run inline only and do not accept a 'model'.");
+            }
+
             // Reject empty-string model (schema also enforces minLength: 1).
             // To switch a job from subagent → inline mode, remove and re-add
             // it without `model` — there's no in-place clearing.
@@ -302,7 +381,11 @@ export function createCronTool(
               const lastStr = job.lastRun ? `Last: ${job.lastRun}` : "Never run";
 
               lines.push(`${status} ${job.name} (${job.id})`);
-              lines.push(`  Type: ${job.type} | Schedule: ${job.schedule}`);
+              lines.push(
+                job.type === "wait"
+                  ? `  Type: wait | Waits for session: ${job.session}`
+                  : `  Type: ${job.type} | Schedule: ${job.schedule}`
+              );
               if (job.model) {
                 lines.push(`  Model: ${job.model} (runs in subagent${job.notify ? ", notifies parent" : ""}${job.extensions ? ", extensions" : ""}${job.skills ? ", skills" : ""})`);
               }
@@ -394,7 +477,9 @@ export function createCronTool(
           const status = job.enabled ? theme.fg("success", "✓") : theme.fg("muted", "✗");
           lines.push(`${status} ${theme.fg("text", job.name)} ${theme.fg("dim", `(${job.id})`)}`);
           lines.push(
-            `  ${theme.fg("dim", "Type:")} ${job.type} ${theme.fg("dim", "| Schedule:")} ${job.schedule}`
+            job.type === "wait"
+              ? `  ${theme.fg("dim", "Type:")} wait ${theme.fg("dim", "| Waits for session:")} ${job.session}`
+              : `  ${theme.fg("dim", "Type:")} ${job.type} ${theme.fg("dim", "| Schedule:")} ${job.schedule}`
           );
           if (job.model) {
             const subagentTag = job.notify ? "(subagent, notifies parent)" : "(subagent)";

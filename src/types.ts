@@ -3,7 +3,14 @@ import { type Static, StringEnum, Type } from "@earendil-works/pi-ai";
 /**
  * Type of cron job
  */
-export type CronJobType = "cron" | "once" | "interval";
+export type CronJobType = "cron" | "once" | "interval" | "wait";
+
+/**
+ * Sentinel stored in `CronJob.schedule` for `wait` jobs. Wait jobs have no
+ * clock time: the target session delivers once it is idle and has no running
+ * pi-subagents; if the target exits first, the owner session delivers instead.
+ */
+export const WAIT_SCHEDULE = "wait";
 
 /**
  * Status of the last job execution
@@ -18,7 +25,7 @@ export interface CronJob {
   id: string;
   /** Human-readable name */
   name: string;
-  /** Cron expression, ISO timestamp, or interval description */
+  /** Cron expression, ISO timestamp, interval description, or `WAIT_SCHEDULE` for wait jobs. */
   schedule: string;
   /** The prompt to execute */
   prompt: string;
@@ -48,8 +55,13 @@ export interface CronJob {
   extensions?: boolean | string[];
   /** Subagent jobs only. If true, loads all skills. If an array of skill names, only those skills. Default undefined (none). */
   skills?: boolean | string[];
-  /** Session id this job is bound to. When absent, every pi in the cwd loads it. */
+  /**
+   * Session id this job is bound to. When absent, every pi in the cwd loads it.
+   * For wait jobs this is the *target* session to wait for.
+   */
   session?: string;
+  /** Wait jobs only. Session id that created the job (owner of the fallback delivery). */
+  ownerSession?: string;
 }
 
 /**
@@ -86,7 +98,7 @@ export const CronToolParams = Type.Object({
   schedule: Type.Optional(
     Type.String({
       description:
-        "Required for add. Cron expression, ISO timestamp, relative time (+10s, +5m), or interval string",
+        "Required for add, except for type='wait'. Cron expression, ISO timestamp, relative time (+10s, +5m), or interval string",
     })
   ),
   prompt: Type.Optional(
@@ -100,8 +112,16 @@ export const CronToolParams = Type.Object({
     })
   ),
   type: Type.Optional(
-    StringEnum(["cron", "once", "interval"], {
-      description: "Job type. Use 'once' for relative times like '+10s'. Default is cron",
+    StringEnum(["cron", "once", "interval", "wait"], {
+      description:
+        "Job type. Use 'once' for relative times like '+10s'. Use 'wait' for a one-shot inline job that delivers once the target session is idle (no running pi-subagents), with a fallback in the creating session if the target exits first (no schedule needed). Default is cron",
+    })
+  ),
+  session: Type.Optional(
+    Type.String({
+      minLength: 1,
+      description:
+        "Wait jobs only. Target session id to wait for; must be a tracked session in the same working directory as the creator. Defaults to the creating session. Ignored for cron/once/interval jobs, whose binding comes from the job scope setting.",
     })
   ),
   description: Type.Optional(
