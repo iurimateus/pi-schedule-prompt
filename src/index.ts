@@ -20,6 +20,8 @@ import { runAddFlow } from "./ui/add-flow.js";
 import { CronWidget } from "./ui/cron-widget.js";
 import { JobsView } from "./ui/jobs-view.js";
 
+const TOOL_NAME = "schedule_prompt";
+
 /** Longest pi quit waits for in-flight subagent teardown. */
 const SHUTDOWN_TEARDOWN_TIMEOUT_MS = 10_000;
 
@@ -187,6 +189,11 @@ export default async function (pi: ExtensionAPI) {
       autoCleanupDisabledJobs(ctx);
     }
     initializeSession(ctx);
+
+    // Default-disabled: keep every other active tool, drop ours until
+    // /schedule-prompt activates it. API throws during extension load, so this
+    // runs here (first point after bindCore) instead of at registerTool time.
+    pi.setActiveTools(pi.getActiveTools().filter((name) => name !== TOOL_NAME));
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
@@ -234,6 +241,12 @@ export default async function (pi: ExtensionAPI) {
   pi.registerCommand("schedule-prompt", {
     description: "Manage scheduled prompts interactively",
     handler: async (_args, ctx) => {
+      // Activating the default-disabled tool is the point of invoking the
+      // command; preserve the rest of the active set.
+      const active = pi.getActiveTools();
+      if (!active.includes(TOOL_NAME)) {
+        pi.setActiveTools([...new Set([...active, TOOL_NAME])]);
+      }
       const mySessionId = ctx.sessionManager.getSessionId();
 
       const action = await ctx.ui.select("Scheduled Prompts", ["Jobs", "Settings"]);
