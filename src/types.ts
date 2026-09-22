@@ -21,7 +21,14 @@ function StringEnum<T extends readonly string[]>(
 /**
  * Type of cron job
  */
-export type CronJobType = "cron" | "once" | "interval" | "idle";
+export type CronJobType = "cron" | "once" | "interval" | "idle" | "wait";
+
+/**
+ * Sentinel stored in `CronJob.schedule` for `wait` jobs. Wait jobs have no
+ * clock time: the target session delivers once it is idle and has no running
+ * pi-subagents; if the target exits first, the owner session delivers instead.
+ */
+export const WAIT_SCHEDULE = "wait";
 
 /**
  * Status of the last job execution
@@ -36,7 +43,7 @@ export interface CronJob {
   id: string;
   /** Human-readable name */
   name: string;
-  /** Cron expression, ISO timestamp, or interval description */
+  /** Cron expression, ISO timestamp, interval description, or `WAIT_SCHEDULE` for wait jobs. */
   schedule: string;
   /** The prompt to execute */
   prompt: string;
@@ -66,8 +73,13 @@ export interface CronJob {
   extensions?: boolean | string[];
   /** Only for jobs with `model` set. If true, loads all skills. If an array of skill names, only those skills. Default undefined (none). */
   skills?: boolean | string[];
-  /** Session id this job is bound to. When absent, every pi in the cwd loads it. */
+  /**
+   * Session id this job is bound to. When absent, every pi in the cwd loads it.
+   * For wait jobs this is the *target* session to wait for.
+   */
   session?: string;
+  /** Wait jobs only. Session id that created the job (owner of the fallback delivery). */
+  ownerSession?: string;
 }
 
 /**
@@ -108,7 +120,7 @@ export const CronToolParams = Type.Object({
   schedule: Type.Optional(
     Type.String({
       description:
-        "Required for add. Format depends on 'type': cron = 6 fields 'sec min hour day month weekday' in local time ('0 */5 * * * *' = every 5 minutes); once = relative '+N' plus s/m/h/d ('+10m', '+2h') or an ISO timestamp at least 5s in the future; interval/idle = N plus s/m/h/d ('30s', '1h'), max 24d. On update, the new schedule must fit the job's existing type.",
+        "Required for add, except for type='wait'. Format depends on 'type': cron = 6 fields 'sec min hour day month weekday' in local time ('0 */5 * * * *' = every 5 minutes); once = relative '+N' plus s/m/h/d ('+10m', '+2h') or an ISO timestamp at least 5s in the future; interval/idle = N plus s/m/h/d ('30s', '1h'), max 24d. On update, the new schedule must fit the job's existing type.",
     })
   ),
   prompt: Type.Optional(
@@ -123,9 +135,16 @@ export const CronToolParams = Type.Object({
     })
   ),
   type: Type.Optional(
-    StringEnum(["cron", "once", "interval", "idle"], {
+    StringEnum(["cron", "once", "interval", "idle", "wait"], {
       description:
-        "Job type; must match the schedule's format. 'cron' (default): recurring, 6-field cron. 'once': a single run at a relative ('+10s') or ISO time. 'interval': repeats every duration ('5m'). 'idle': fires once after the user has been inactive for the duration ('10m') and your current turn has finished; it re-arms only after new user activity. Cannot be changed by update.",
+        "Job type; must match the schedule's format. 'cron' (default): recurring, 6-field cron. 'once': a single run at a relative ('+10s') or ISO time. 'interval': repeats every duration ('5m'). 'idle': fires once after the user has been inactive for the duration ('10m') and your current turn has finished; it re-arms only after new user activity. 'wait': a one-shot inline job with no schedule; it delivers once the target session is idle (no running pi-subagents), with a fallback in the creating session if the target exits first. Cannot be changed by update.",
+    })
+  ),
+  session: Type.Optional(
+    Type.String({
+      minLength: 1,
+      description:
+        "Wait jobs only. Target session id to wait for; must be a tracked session in the same working directory as the creator. Defaults to the creating session. Ignored for other job types, whose binding comes from the job scope setting.",
     })
   ),
   description: Type.Optional(
