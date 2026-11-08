@@ -587,7 +587,7 @@ describe("CronScheduler — idle scheduling", () => {
     scheduler.stop();
   });
 
-  it("an open custom overlay (e.g. the Jobs view) doesn't pause the clock", () => {
+  it("an open custom overlay (e.g. another extension's panel) doesn't pause the clock", () => {
     const { pi, storage, scheduler } = setup([]);
     scheduler.start();
     scheduler.onPromptStart("custom");
@@ -600,29 +600,17 @@ describe("CronScheduler — idle scheduling", () => {
     scheduler.stop();
   });
 
-  it("keys in the Jobs view restart the clock; its add flow pauses it", () => {
+  it("a dialog opened over a custom overlay pauses the clock", () => {
     const { pi, scheduler } = setup();
     scheduler.start();
-    scheduler.onPromptStart("custom"); // Jobs view opens
-    vi.advanceTimersByTime(9 * MIN);
-    scheduler.onUserPresent(); // a key press
+    scheduler.onPromptStart("custom"); // an overlay that doesn't pause idle jobs
     vi.advanceTimersByTime(9 * MIN);
     expect(pi.sendUserMessage).not.toHaveBeenCalled();
-    scheduler.pauseForDialog(); // add flow
+    scheduler.pauseForDialog(); // its add flow, reported by the overlay itself
     vi.advanceTimersByTime(30 * MIN);
     expect(pi.sendUserMessage).not.toHaveBeenCalled();
     scheduler.resumeAfterDialog();
     vi.advanceTimersByTime(10 * MIN);
-    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
-    scheduler.stop();
-  });
-
-  it("Jobs view key presses don't let a fired job fire again", () => {
-    const { pi, scheduler } = setup();
-    scheduler.start();
-    vi.advanceTimersByTime(10 * MIN);
-    scheduler.onUserPresent();
-    vi.advanceTimersByTime(60 * MIN);
     expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
     scheduler.stop();
   });

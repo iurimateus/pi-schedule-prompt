@@ -280,10 +280,10 @@ export class CronScheduler {
   /**
    * A blocking dialog opened. A question dialog (select/confirm/input/editor)
    * means the user is at the keyboard, so pause. A `custom` overlay doesn't
-   * pause: it can stay open indefinitely (this extension's own Jobs view, or
-   * another extension's panel) and would otherwise freeze idle jobs. pi
-   * reports dialogs nested in an overlay as part of the overlay, so overlays
-   * that open dialogs report them with {@link pauseForDialog} themselves.
+   * pause: it can stay open indefinitely (another extension's panel) and would
+   * otherwise freeze idle jobs. pi reports dialogs nested in an overlay as
+   * part of the overlay, so overlays that open dialogs report them with
+   * {@link pauseForDialog} themselves.
    */
   onPromptStart(kind: UIPromptKind): void {
     if (kind === "custom") return;
@@ -299,12 +299,6 @@ export class CronScheduler {
   /** The question dialog closed: unpause and restart the clock. */
   resumeAfterDialog(): void {
     this.promptOpen = false;
-    this.restartIdleClock();
-  }
-
-  /** The user is using this extension's UI (e.g. a key in the Jobs view):
-   *  restart the clock without starting a new stretch. */
-  onUserPresent(): void {
     this.restartIdleClock();
   }
 

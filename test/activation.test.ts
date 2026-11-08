@@ -51,7 +51,6 @@ vi.mock("../src/ui/cron-widget.js", () => {
   };
 });
 
-vi.mock("../src/ui/jobs-view.js", () => ({ JobsView: class {} }));
 vi.mock("../src/ui/add-flow.js", () => ({ runAddFlow: vi.fn() }));
 
 import extension from "../src/index.js";
