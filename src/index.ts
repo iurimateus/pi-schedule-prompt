@@ -9,7 +9,6 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { OverlayHandle } from "@earendil-works/pi-tui";
 import { Text } from "@earendil-works/pi-tui";
 import { CronScheduler } from "./scheduler.js";
 import { loadSettings, type ScheduleSettings, saveSettings } from "./settings.js";
@@ -17,7 +16,7 @@ import { CronStorage } from "./storage.js";
 import { createCronTool } from "./tool.js";
 import { runAddFlow } from "./ui/add-flow.js";
 import { CronWidget } from "./ui/cron-widget.js";
-import { JobsView } from "./ui/jobs-view.js";
+import { runJobsFlow } from "./ui/jobs-flow.js";
 
 const TOOL_NAME = "schedule_prompt";
 
@@ -170,37 +169,9 @@ export default async function (pi: ExtensionAPI) {
 
       switch (action) {
         case "Jobs": {
-          // Hide the Jobs overlay while the add flow's dialogs are open —
-          // otherwise it sits on top of them and steals input.
-          let jobsOverlay: OverlayHandle | undefined;
-          const wrappedRunAdd = async () => {
-            jobsOverlay?.setHidden(true);
-            try {
-              await runAddFlow(ctx, storage, scheduler, settings, mySessionId);
-            } finally {
-              jobsOverlay?.setHidden(false);
-              jobsOverlay?.focus();
-            }
-          };
-          await ctx.ui.custom<void>(
-            (tui, theme, _kb, done) =>
-              new JobsView(
-                storage,
-                scheduler,
-                mySessionId,
-                wrappedRunAdd,
-                theme,
-                () => tui.requestRender(),
-                () => done(undefined),
-              ),
-            {
-              overlay: true,
-              overlayOptions: { width: "100%", maxHeight: "100%" },
-              onHandle: (h) => {
-                jobsOverlay = h;
-              },
-            },
-          );
+          await runJobsFlow(ctx, storage, scheduler, mySessionId, async () => {
+            await runAddFlow(ctx, storage, scheduler, settings, mySessionId);
+          });
           break;
         }
 

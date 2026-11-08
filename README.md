@@ -112,7 +112,7 @@ The widget displays below your editor (only when jobs exist):
 
 `/schedule-prompt` activates the `schedule_prompt` tool for the session (the opt-in for the default-disabled tool) and opens a two-item menu:
 
-- **Jobs** — full-screen overlay listing every scheduled prompt in this cwd. Your session's jobs are at the top; jobs bound to other sessions render read-only below. Hotkeys: `↑`/`↓` select, `a` add (opens the input series — name/type/schedule/prompt/scope/confirm), `t` toggle enabled, `s` toggle scope (session-bound ↔ shared with all pi sessions in this cwd), `x` remove (with `y/n` confirm), `c` cleanup all disabled jobs, `q`/`esc` close.
+- **Jobs** — selectable menus list scheduled prompts in this cwd. Jobs bound to other sessions remain visible and read-only. Choose a job to enable/disable it, change its scope (session-only ↔ shared with pi sessions in this cwd), or remove it after confirmation. Add opens the guided name/type/schedule/prompt/scope flow; clean up disabled jobs removes only jobs available to this session, after confirmation. Choose **Quit** to exit Jobs.
 - **Settings** — widget visibility and the default scope for new jobs (`Bind new jobs to session: yes/no`). Persists across sessions.
 
 ### Tool Parameters (`schedule_prompt`)
