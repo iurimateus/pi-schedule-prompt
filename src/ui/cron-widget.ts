@@ -1,8 +1,10 @@
 /**
  * CronWidget — displays scheduled prompts below the editor
  *
- * Shows a table with status, name, schedule, next run, last run, and run count
- * Auto-refreshes every 30 seconds to update relative times
+ * Expanded (default): a table with status, name, schedule, next run, last run,
+ * and run count, auto-refreshed every 30 seconds to update relative times.
+ * Collapsed (`jobsVisible: false`): a single header line, still mounted —
+ * `widgetVisible: false` is what removes the widget entirely.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -54,6 +56,7 @@ export class CronWidget {
     private scheduler: CronScheduler,
     private pi: ExtensionAPI,
     private isVisible: () => boolean,
+    private isExpanded: () => boolean,
     private sessionId: string | undefined = undefined,
   ) {
     // Re-render on add/remove/update/fire/error so the row count, status icons,
@@ -86,14 +89,22 @@ export class CronWidget {
     );
 
     // 30s tick re-renders so relative-time labels ("in 5m") update even when
-    // nothing else changes. Same path as cron:change-driven refresh.
-    if (!this.refreshInterval) {
+    // nothing else changes. Same path as cron:change-driven refresh. The
+    // collapsed one-liner has no times to refresh, and a live interval must not
+    // survive collapsing into it.
+    if (!this.isExpanded()) {
+      this.stopRefreshInterval();
+    } else if (!this.refreshInterval) {
       this.refreshInterval = setInterval(() => this.refresh(), 30000);
     }
   }
 
   hide(ctx: any): void {
     ctx.ui.setWidget(WIDGET_ID, undefined);
+    this.stopRefreshInterval();
+  }
+
+  private stopRefreshInterval(): void {
     if (this.refreshInterval) {
       clearInterval(this.refreshInterval);
       this.refreshInterval = undefined;
@@ -116,7 +127,11 @@ export class CronWidget {
     const uniqueJobs = Array.from(
       new Map(jobs.map(job => [job.id, job])).values()
     );
-    
+    const header =
+      theme.fg("accent", theme.bold("Scheduled Prompts")) + theme.fg("dim", ` (${uniqueJobs.length} jobs)`);
+
+    if (!this.isExpanded()) return [header];
+
     const container = new Container();
     const borderColor = (s: string) => theme.fg("accent", s);
 
@@ -124,7 +139,7 @@ export class CronWidget {
     container.addChild(new DynamicBorder(borderColor));
     container.addChild(
       new Text(
-        theme.fg("accent", theme.bold("Scheduled Prompts")) + theme.fg("dim", ` (${uniqueJobs.length} jobs)`),
+        header,
         1,
         0
       )

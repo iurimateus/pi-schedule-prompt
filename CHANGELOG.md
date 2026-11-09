@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Back navigation in the interactive add flow: every `select`/`confirm` step now offers `Back`, and dismissing any step (`Esc`) retreats one step instead of abandoning the whole wizard. The step order is re-derived from the chosen job type, so switching type when going back skips or inserts the schedule and scope steps. Back on the first step (job name) still exits.
+- `jobsVisible` setting and a `/schedule-prompt hide|show|toggle` argument that collapses the widget to its single `Scheduled Prompts (N jobs)` header line without unmounting it, so the job count stays visible with the table out of the way. Distinct from `widgetVisible: false`, which removes the widget entirely. Also togglable from `/schedule-prompt → Settings → Jobs visibility`, and persisted like the other settings.
 
 ### Changed
 - `schedule_prompt` is now **inactive by default** (opt-in activation): at `session_start` the tool is removed from the active tool set while every other active tool is preserved, so the agent cannot schedule prompts until the user runs `/schedule-prompt`, which re-activates it (deduplicated) for the session

@@ -52,6 +52,25 @@ describe("ScheduleSettings — sanitize", () => {
     expect(s.widgetVisible).toBe(false);
     expect(s.defaultJobScope).toBe("workdir");
   });
+
+  it.each([true, false])("accepts jobsVisible=%s", (jobsVisible) => {
+    writeProjectSettings({ jobsVisible });
+    expect(loadSettings(cwd).jobsVisible).toBe(jobsVisible);
+  });
+
+  it("drops a non-boolean jobsVisible", () => {
+    writeProjectSettings({ jobsVisible: "yes" });
+    expect(loadSettings(cwd).jobsVisible).toBeUndefined();
+  });
+
+  it("preserves jobsVisible alongside widgetVisible and defaultJobScope", () => {
+    writeProjectSettings({ widgetVisible: false, jobsVisible: false, defaultJobScope: "workdir" });
+    expect(loadSettings(cwd)).toEqual({
+      widgetVisible: false,
+      jobsVisible: false,
+      defaultJobScope: "workdir",
+    });
+  });
 });
 
 describe("saveSettings — partial update", () => {
