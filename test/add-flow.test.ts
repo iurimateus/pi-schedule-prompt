@@ -116,7 +116,9 @@ function writeRecord(dir: string, spec: RecordSpec): void {
 
 function waitOptions(ui: { select: { mock: { calls: unknown[][] } } }): string[] {
   const call = ui.select.mock.calls.find((c) => c[0] === "Wait for");
-  return (call?.[1] as string[] | undefined) ?? [];
+  const options = (call?.[1] as string[] | undefined) ?? [];
+  // The trailing Back option is covered by the navigation tests.
+  return options.filter((option) => option !== "Back");
 }
 
 describe("runAddFlow wait picker", () => {
@@ -197,17 +199,6 @@ describe("runAddFlow wait picker", () => {
       }),
     );
     expect(h.ui.confirm.mock.calls[0][1]).toContain("target");
-  });
-
-  it("cancels without saving when the picker is dismissed", async () => {
-    const dir = makeCoordinatorDir();
-    writeRecord(dir, { sessionId: "target", sessionFile: writeSessionFile(dir, "target", rootHeader("target")) });
-
-    const h = makeHarness(["my wait"], { coordinatorDir: dir, pickType: WAIT, pickWait: () => undefined });
-    await runAddFlow(h.ctx, h.storage, h.scheduler, h.settings, "current-session", dir);
-
-    expect(h.addJob).not.toHaveBeenCalled();
-    expect(h.scheduler.addJob).not.toHaveBeenCalled();
   });
 
   it("notifies and saves nothing when no live sessions are available", async () => {
