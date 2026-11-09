@@ -9,7 +9,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { type AutocompleteItem, Text } from "@earendil-works/pi-tui";
 import { CronScheduler } from "./scheduler.js";
 import { loadSettings, type ScheduleSettings, saveSettings } from "./settings.js";
 import { CronStorage } from "./storage.js";
@@ -20,6 +20,19 @@ import { runJobsFlow } from "./ui/jobs-flow.js";
 
 const TOOL_NAME = "schedule_prompt";
 
+/** Optional `/schedule-prompt` argument; also the autocomplete source. */
+const VISIBILITY_ARGS = [
+  { value: "hide", label: "hide", description: "Collapse the widget to a single line" },
+  { value: "show", label: "show", description: "Expand the widget to the job table" },
+  { value: "toggle", label: "toggle", description: "Flip between collapsed and expanded" },
+] as const satisfies readonly AutocompleteItem[];
+
+type VisibilityArg = (typeof VISIBILITY_ARGS)[number]["value"];
+
+function parseVisibilityArg(argument: string): VisibilityArg | undefined {
+  return VISIBILITY_ARGS.find((item) => item.value === argument)?.value;
+}
+
 export default async function (pi: ExtensionAPI) {
   let storage: CronStorage;
   let scheduler: CronScheduler;
@@ -28,6 +41,16 @@ export default async function (pi: ExtensionAPI) {
   // widget read via closure so toggles take effect without re-registering.
   let settings: ScheduleSettings = {};
   const isWidgetVisible = () => settings.widgetVisible !== false;
+  // Unset means expanded: only an explicit `false` collapses the widget.
+  const isJobsVisible = () => settings.jobsVisible !== false;
+
+  // Hide/show flips `jobsVisible`, which keeps the widget mounted as a one-line
+  // header; `widgetVisible` is the setting that unmounts it.
+  const setJobsVisible = (ctx: any, next: boolean): boolean => {
+    settings = { ...settings, jobsVisible: next };
+    widget.show(ctx);
+    return saveSettings(ctx.cwd, { jobsVisible: next });
+  };
 
   // Register custom message renderer for scheduled prompts
   pi.registerMessageRenderer("scheduled_prompt", (message, _options, theme) => {
@@ -93,7 +116,14 @@ export default async function (pi: ExtensionAPI) {
     settings = loadSettings(ctx.cwd);
     storage = new CronStorage(ctx.cwd);
     scheduler = new CronScheduler(storage, pi, ctx);
-    widget = new CronWidget(storage, scheduler, pi, isWidgetVisible, ctx.sessionManager.getSessionId());
+    widget = new CronWidget(
+      storage,
+      scheduler,
+      pi,
+      isWidgetVisible,
+      isJobsVisible,
+      ctx.sessionManager.getSessionId(),
+    );
 
     scheduler.start();
 
@@ -155,7 +185,11 @@ export default async function (pi: ExtensionAPI) {
 
   pi.registerCommand("schedule-prompt", {
     description: "Manage scheduled prompts interactively",
-    handler: async (_args, ctx) => {
+    getArgumentCompletions: (argumentPrefix: string) => {
+      const matches = VISIBILITY_ARGS.filter((item) => item.value.startsWith(argumentPrefix));
+      return matches.length > 0 ? matches : null;
+    },
+    handler: async (args, ctx) => {
       // Activating the default-disabled tool is the point of invoking the
       // command; preserve the rest of the active set.
       const active = pi.getActiveTools();
@@ -163,6 +197,32 @@ export default async function (pi: ExtensionAPI) {
         pi.setActiveTools([...new Set([...active, TOOL_NAME])]);
       }
       const mySessionId = ctx.sessionManager.getSessionId();
+
+      // A few call sites still pass `[]`; only a non-empty trimmed string is an
+      // argument, anything else opens the menu.
+      const requested = typeof args === "string" ? args.trim() : "";
+      if (requested) {
+        const visibility = parseVisibilityArg(requested);
+        if (!visibility) {
+          ctx.ui.notify(`Unknown argument "${requested}" — use hide, show, or toggle`, "error");
+          return;
+        }
+
+        const next = visibility === "toggle" ? !isJobsVisible() : visibility === "show";
+        const persisted = setJobsVisible(ctx, next);
+        const count = storage
+          .getAllJobs()
+          .filter((j) => CronScheduler.isLoadedFor(j, mySessionId)).length;
+        const jobsLabel = `${count} ${count === 1 ? "job" : "jobs"}`;
+        const state = next
+          ? `Jobs shown (${jobsLabel})`
+          : `Jobs hidden (${jobsLabel}) — /schedule-prompt show to expand`;
+        ctx.ui.notify(
+          persisted ? state : `${state} (session only; failed to persist)`,
+          persisted ? "info" : "warning",
+        );
+        return;
+      }
 
       const action = await ctx.ui.select("Scheduled Prompts", ["Jobs", "Settings"]);
       if (!action) return;
@@ -183,6 +243,7 @@ export default async function (pi: ExtensionAPI) {
             const bound = (settings.defaultJobScope ?? "session") === "session";
             const choice = await ctx.ui.select("Settings", [
               `Widget visibility: ${widgetState}`,
+              `Jobs visibility: ${isJobsVisible() ? "shown" : "hidden"}`,
               `Bind new jobs to session: ${bound ? "yes" : "no"}`,
               "Back",
             ]);
@@ -195,6 +256,14 @@ export default async function (pi: ExtensionAPI) {
               if (!persisted) {
                 ctx.ui.notify(
                   `Widget ${next ? "shown" : "hidden"} (session only; failed to persist)`,
+                  "warning",
+                );
+              }
+            } else if (choice.startsWith("Jobs visibility:")) {
+              const next = !isJobsVisible();
+              if (!setJobsVisible(ctx, next)) {
+                ctx.ui.notify(
+                  `Jobs ${next ? "shown" : "hidden"} (session only; failed to persist)`,
                   "warning",
                 );
               }

@@ -108,12 +108,20 @@ The widget displays below your editor (only when jobs exist):
   ✓ review-pr     Feb 13 15:30    review PR #123            in 2h     never    0
 ```
 
+Collapsing with `/schedule-prompt hide` (or `show` / `toggle`) reduces it to a single line, keeping the count visible while the table gets out of the way:
+
+```
+ Scheduled Prompts (3 jobs)
+```
+
+`jobsVisible: false` in the settings file starts collapsed. It is separate from `widgetVisible: false`, which removes the widget entirely.
+
 ### Manual commands
 
-`/schedule-prompt` activates the `schedule_prompt` tool for the session (the opt-in for the default-disabled tool) and opens a two-item menu:
+`/schedule-prompt` activates the `schedule_prompt` tool for the session (the opt-in for the default-disabled tool). Run it bare to open a two-item menu; pass `hide`, `show`, or `toggle` to only switch the widget between collapsed and expanded and return.
 
 - **Jobs** — selectable menus list scheduled prompts in this cwd. Jobs bound to other sessions remain visible and read-only. Choose a job to enable/disable it, change its scope (session-only ↔ shared with pi sessions in this cwd), or remove it after confirmation. Add opens the guided name/type/schedule/prompt/scope flow; clean up disabled jobs removes only jobs available to this session, after confirmation. Choose **Quit** to exit Jobs. Every step of the add flow can be revisited: `Back` (last option on each selector, and on the confirm dialog as `No`) or `Esc` returns to the previous step, keeping the answers already given; stepping back from the job name exits.
-- **Settings** — widget visibility and the default scope for new jobs (`Bind new jobs to session: yes/no`). Persists across sessions.
+- **Settings** — widget visibility (shown/hidden), jobs visibility (shown/hidden, which collapses the widget to its one-line header), and the default scope for new jobs (`Bind new jobs to session: yes/no`). Persists across sessions.
 
 ### Tool Parameters (`schedule_prompt`)
 

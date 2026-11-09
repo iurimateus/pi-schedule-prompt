@@ -12,6 +12,11 @@ export interface ScheduleSettings {
   /** Default true. Project file overrides global. */
   widgetVisible?: boolean;
   /**
+   * Default true. False collapses the widget to a single header line instead
+   * of unmounting it — `widgetVisible: false` is the one that removes it.
+   */
+  jobsVisible?: boolean;
+  /**
    * Default scope for newly-created jobs. `"session"` (default) writes
    * `session: <currentSessionId>` so only the creating pi fires the job;
    * `"workdir"` omits the field so every pi in this cwd fires it.
@@ -26,6 +31,7 @@ function sanitize(raw: unknown): ScheduleSettings {
   const r = raw as Record<string, unknown>;
   const out: ScheduleSettings = {};
   if (typeof r.widgetVisible === "boolean") out.widgetVisible = r.widgetVisible;
+  if (typeof r.jobsVisible === "boolean") out.jobsVisible = r.jobsVisible;
   if (r.defaultJobScope === "session" || r.defaultJobScope === "workdir") {
     out.defaultJobScope = r.defaultJobScope;
   }
