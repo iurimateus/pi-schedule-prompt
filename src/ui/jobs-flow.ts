@@ -55,6 +55,7 @@ export async function runJobsFlow(
     const actions = [
       job.enabled ? "Disable job" : "Enable job",
       job.session ? "Make shared" : "Make session-only",
+      ...(job.type === "wait" ? [] : ["Edit schedule"]),
       "Remove job",
       BACK,
     ];
@@ -68,6 +69,26 @@ export async function runJobsFlow(
       const session = action === "Make shared" ? undefined : mySessionId;
       storage.updateJob(job.id, { session });
       scheduler.updateJob(job.id, { ...job, session });
+    } else if (action === "Edit schedule") {
+      let schedule: string | undefined;
+      let intervalMs: number | undefined;
+      while (true) {
+        const raw = await ctx.ui.input("Schedule", job.schedule);
+        if (!raw) break;
+        const result = CronScheduler.validateSchedule(job.type, raw.trim());
+        if (!result.ok) {
+          ctx.ui.notify(result.error, "error");
+          continue;
+        }
+        schedule = result.schedule;
+        intervalMs = result.intervalMs;
+        break;
+      }
+      if (schedule && await ctx.ui.confirm("Confirm schedule", `Change "${job.name}" to ${CronScheduler.describeSchedule(job.type, schedule)}?`)) {
+        storage.updateJob(job.id, { schedule, intervalMs });
+        scheduler.updateJob(job.id, { ...job, schedule, intervalMs });
+      }
+
     } else if (action === "Remove job") {
       if (await ctx.ui.confirm("Remove job", `Remove "${job.name}"?`)) {
         storage.removeJob(job.id);

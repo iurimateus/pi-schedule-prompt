@@ -18,17 +18,20 @@ const job: CronJob = {
 };
 const otherJob: CronJob = { ...job, id: "job-2", name: "other-report", session: "session-b" };
 
-function makeHarness(choices: (string | undefined)[], confirmations: boolean[] = [true], jobs = [job]) {
+function makeHarness(choices: (string | undefined)[], confirmations: boolean[] = [true], jobs = [job], inputs: (string | undefined)[] = []) {
   jobs = jobs.map((item) => ({ ...item }));
   const queue = [...choices];
   const confirmationQueue = [...confirmations];
+  const inputQueue = [...inputs];
   const select = vi.fn(async (title: string, options: string[]) => {
     const choice = queue.shift();
     if (choice !== undefined && !options.includes(choice)) throw new Error(`Unexpected choice for ${title}: ${choice}`);
     return choice;
   });
+  const input = vi.fn(async () => inputQueue.shift());
   const confirm = vi.fn(async () => confirmationQueue.shift() ?? false);
-  const ui = { select, confirm };
+  const notify = vi.fn();
+  const ui = { select, input, confirm, notify };
   const storage = {
     getAllJobs: vi.fn(() => jobs),
     updateJob: vi.fn((id: string, update: Partial<CronJob>) => {
@@ -55,9 +58,17 @@ describe("runJobsFlow", () => {
     await runJobsFlow(h.ctx, h.storage, h.scheduler, "session-a", vi.fn());
 
     expect(h.ui.select).toHaveBeenNthCalledWith(1, "Jobs", ["Add job", entry, "Clean up disabled jobs (0)", quit]);
-    expect(h.ui.select).toHaveBeenNthCalledWith(2, "daily-report", ["Disable job", "Make shared", "Remove job", back]);
+    expect(h.ui.select).toHaveBeenNthCalledWith(2, "daily-report", ["Disable job", "Make shared", "Edit schedule", "Remove job", back]);
     expect(h.storage.updateJob).toHaveBeenCalledWith(job.id, { enabled: false });
     expect(h.scheduler.updateJob).toHaveBeenCalledWith(job.id, { ...job, enabled: false });
+  });
+
+  it("edits a clock job schedule after validation and confirmation", async () => {
+    const h = makeHarness([entry, "Edit schedule", quit], [true], [job], ["not a cron", "0 30 10 * * *"]);
+    await runJobsFlow(h.ctx, h.storage, h.scheduler, "session-a", vi.fn());
+    expect(h.ui.input).toHaveBeenCalledTimes(2);
+    expect(h.storage.updateJob).toHaveBeenCalledWith(job.id, { schedule: "0 30 10 * * *", intervalMs: undefined });
+    expect(h.scheduler.updateJob).toHaveBeenCalledWith(job.id, { ...job, schedule: "0 30 10 * * *", intervalMs: undefined });
   });
 
   it("enables a disabled job", async () => {
