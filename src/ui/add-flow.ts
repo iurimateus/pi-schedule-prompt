@@ -145,7 +145,9 @@ export async function runAddFlow(
         break;
       }
       case "prompt": {
-        const prompt = await ctx.ui.input("Prompt", "Enter the prompt to execute");
+        // The multi-line editor adds a newline for Ctrl+J and Shift+Enter;
+        // `input` is single-line and treats Ctrl+J as submit.
+        const prompt = await ctx.ui.editor("Prompt");
         if (!prompt) {
           if (!goBack()) return;
           break;

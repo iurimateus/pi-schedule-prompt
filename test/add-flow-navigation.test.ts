@@ -20,6 +20,10 @@ interface InputCall {
   dialog: "input";
   title: string;
 }
+interface EditorCall {
+  dialog: "editor";
+  title: string;
+}
 interface SelectCall {
   dialog: "select";
   title: string;
@@ -30,7 +34,7 @@ interface ConfirmCall {
   title: string;
   message: string;
 }
-type DialogCall = InputCall | SelectCall | ConfirmCall;
+type DialogCall = InputCall | EditorCall | SelectCall | ConfirmCall;
 
 // Each entry is [expected title prefix, reply]. A title mismatch or an
 // exhausted script throws, so an unexpected step (e.g. a missed back step)
@@ -56,6 +60,13 @@ function makeHarness(script: [string, Reply][], opts: { cwd?: string } = {}) {
       if (typeof reply === "string") return reply;
       if (reply === ESC) return undefined;
       throw new Error(`Bad reply for input "${title}": ${String(reply)}`);
+    }),
+    editor: vi.fn(async (title: string) => {
+      calls.push({ dialog: "editor", title });
+      const reply = next("editor", title);
+      if (typeof reply === "string") return reply;
+      if (reply === ESC) return undefined;
+      throw new Error(`Bad reply for editor "${title}": ${String(reply)}`);
     }),
     select: vi.fn(async (title: string, options: string[]) => {
       calls.push({ dialog: "select", title, options: [...options] });
@@ -91,6 +102,10 @@ function titles(calls: DialogCall[]): string[] {
 
 function inputTitles(calls: DialogCall[]): string[] {
   return calls.filter((call): call is InputCall => call.dialog === "input").map((call) => call.title);
+}
+
+function editorTitles(calls: DialogCall[]): string[] {
+  return calls.filter((call): call is EditorCall => call.dialog === "editor").map((call) => call.title);
 }
 
 function selectCalls(calls: DialogCall[]): SelectCall[] {
@@ -187,7 +202,8 @@ describe("runAddFlow back navigation", () => {
 
     await runAddFlow(h.ctx, h.storage, h.scheduler, h.settings, "session-1");
 
-    expect(inputTitles(h.calls)).toEqual(["Job Name", "Schedule", "Prompt", "Schedule", "Prompt"]);
+    expect(inputTitles(h.calls)).toEqual(["Job Name", "Schedule", "Schedule"]);
+    expect(editorTitles(h.calls)).toEqual(["Prompt", "Prompt"]);
     expect(h.addJob).toHaveBeenCalledTimes(1);
     expect(h.addJob.mock.calls[0][0]).toMatchObject({ name: "my job", prompt: "the prompt" });
   });
@@ -240,7 +256,8 @@ describe("runAddFlow back navigation", () => {
 
     await runAddFlow(h.ctx, h.storage, h.scheduler, h.settings, "owner", dir);
 
-    expect(inputTitles(h.calls)).toEqual(["Job Name", "Prompt", "Prompt"]);
+    expect(inputTitles(h.calls)).toEqual(["Job Name"]);
+    expect(editorTitles(h.calls)).toEqual(["Prompt", "Prompt"]);
     expect(h.addJob).toHaveBeenCalledTimes(1);
     expect(h.addJob.mock.calls[0][0]).toMatchObject({ type: "wait", prompt: "second prompt" });
   });
@@ -259,7 +276,8 @@ describe("runAddFlow back navigation", () => {
 
     await runAddFlow(h.ctx, h.storage, h.scheduler, h.settings, "session-1");
 
-    expect(inputTitles(h.calls)).toEqual(["Job Name", "Schedule", "Prompt", "Prompt"]);
+    expect(inputTitles(h.calls)).toEqual(["Job Name", "Schedule"]);
+    expect(editorTitles(h.calls)).toEqual(["Prompt", "Prompt"]);
     expect(h.addJob).toHaveBeenCalledTimes(1);
   });
 

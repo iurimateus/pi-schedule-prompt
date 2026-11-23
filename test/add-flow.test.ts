@@ -16,19 +16,22 @@ interface HarnessOptions {
   pickWait?: (options: string[]) => string | undefined;
 }
 
-// Drives runAddFlow through a scripted UI: `input` returns queued replies,
-// `select` takes the first option unless a test picks a type/wait target,
-// `confirm` accepts. Keeps the test at the runAddFlow/UI seam - no TUI, no disk.
+// Drives runAddFlow through a scripted UI: `input` and `editor` return queued
+// replies, `select` takes the first option unless a test picks a type/wait
+// target, `confirm` accepts. Keeps the test at the runAddFlow/UI seam - no TUI,
+// no disk.
 function makeHarness(inputs: (string | undefined)[], opts: HarnessOptions = {}) {
   const queue = [...inputs];
   const input = vi.fn();
   input.mockImplementation(async () => queue.shift());
+  const editor = vi.fn();
+  editor.mockImplementation(async () => queue.shift());
   const select = vi.fn(async (title: string, options: string[]) => {
     if (title === "Wait for" && opts.pickWait) return opts.pickWait(options);
     if (title === "Job Type" && opts.pickType) return opts.pickType;
     return options[0];
   });
-  const ui = { input, select, confirm: vi.fn(async () => true), notify: vi.fn() };
+  const ui = { input, editor, select, confirm: vi.fn(async () => true), notify: vi.fn() };
 
   const addJob = vi.fn();
   const storage = { hasJobWithName: () => false, addJob } as unknown as CronStorage;
@@ -66,6 +69,21 @@ describe("runAddFlow schedule step", () => {
       type: "cron",
     });
     expect(h.scheduler.addJob).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("runAddFlow prompt step", () => {
+  it("collects the prompt in the multiline editor and keeps embedded newlines", async () => {
+    const prompt = "Summarize the logs.\nThen list every failure.";
+    const h = makeHarness(["my job", "0 0 9 * * *", prompt]);
+
+    await runAddFlow(h.ctx, h.storage, h.scheduler, h.settings, undefined);
+
+    expect(h.ui.editor).toHaveBeenCalledTimes(1);
+    expect(h.ui.editor.mock.calls[0][0]).toBe("Prompt");
+    expect(h.ui.input).toHaveBeenCalledTimes(2);
+    expect(h.addJob.mock.calls[0][0]).toMatchObject<Partial<CronJob>>({ prompt });
+    expect(h.ui.confirm.mock.calls[0][1]).toContain(prompt);
   });
 });
 
