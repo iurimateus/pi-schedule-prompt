@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Optional `/schedule-prompt` argument (`hide` | `show` | `toggle`) and the
 // Settings submenu entry that flips the same `jobsVisible` setting. Drives the
 // real src/index.ts wiring against mocked collaborators, mirroring
-// activation.test.ts.
+// active-tools.test.ts.
 
 const { loadSettingsMock, saveSettingsMock, jobs, widgets } = vi.hoisted(() => ({
   loadSettingsMock: vi.fn((): Record<string, unknown> => ({})),
