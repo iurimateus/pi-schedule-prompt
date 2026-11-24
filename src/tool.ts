@@ -55,10 +55,7 @@ export function createCronTool(
     name: "schedule_prompt",
     label: "Schedule Prompt",
     description:
-      "Schedule a prompt to run later, triggered by time or by user inactivity. Use it when the user wants something to happen at a time ('every morning', 'in 10 minutes', 'at 5pm') or after they have been inactive ('if I'm away for 15 minutes'). To do work now or in parallel, do it directly instead of scheduling it a few seconds out.\n" +
-      "IMPORTANT: action='add' requires 'prompt', and 'type' must match the schedule's format: 'cron' (default) takes a 6-field cron expression ('0 0 9 * * *' = 9am daily); 'once' takes a relative time ('+10m') or ISO timestamp; 'interval' and 'idle' take a duration ('5m'); 'wait' takes no schedule and delivers once the target session is idle (no running pi-subagents), falling back to the creating session if the target exits first.\n" +
-      "When a job fires without 'model', its prompt arrives in this chat as a user message for you to act on. With 'model', it runs in a separate session that cannot see this chat. Jobs fire only while pi is running. You cannot add jobs while a scheduled prompt is among the last few messages of this chat (prevents loops); ask the user to retry after the next exchange.\n" +
-      "Actions: add (schedule+prompt); list (shows jobs and their IDs); update (jobId; changes any field except 'type'; to change type, remove and re-add); enable/disable/remove (jobId); cleanup (deletes all disabled jobs).",
+      "Schedule prompts by cron, ISO time, relative time, or interval. For add, provide prompt and schedule unless type is 'wait'. Type defaults to 'cron'; use 'once' for relative or ISO times, or 'wait' for inline delivery when the target session is idle.", 
     parameters: CronToolParams,
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -99,7 +96,7 @@ export function createCronTool(
             }
             if (!isWait && !params.schedule) {
               throw new Error(
-                "Missing required parameter for add action: 'schedule'. Provide a schedule (e.g., '+10s', '*/5 * * * * *'), or use type='wait' to deliver without one. Set 'type' to match the schedule: 'once' for '+10s' or ISO, 'interval'/'idle' for '5m', 'cron' for 6-field cron."
+                "Missing required parameter for add action: 'schedule'. Provide a schedule (e.g., '+10s', '*/5 * * * * *')."
               );
             }
 
@@ -182,7 +179,7 @@ export function createCronTool(
             details.jobName = job.name;
 
             const modelLine = job.model
-              ? `\nModel: ${job.model} (runs in separate session${job.notify ? ", notifies parent" : ""}${job.extensions ? ", extensions" : ""}${job.skills ? ", skills" : ""})`
+              ? `\nModel: ${job.model} (runs in subagent${job.notify ? ", notifies parent" : ""}${job.extensions ? ", extensions" : ""}${job.skills ? ", skills" : ""})`
               : "";
             const waitLine = isWait
               ? `\nWaits for session: ${job.session}\nOwner session: ${job.ownerSession}`
@@ -317,11 +314,11 @@ export function createCronTool(
             }
 
             // Reject empty-string model (schema also enforces minLength: 1).
-            // To switch a job from separate-session → inline mode, remove and
-            // re-add it without `model` — there's no in-place clearing.
+            // To switch a job from subagent → inline mode, remove and re-add
+            // it without `model` — there's no in-place clearing.
             if (params.model !== undefined && params.model.length === 0) {
               throw new Error(
-                "'model' must be a non-empty string. To switch a job back to inline, remove and re-add it without 'model'."
+                "'model' must be a non-empty string. To switch a job from subagent back to inline, remove and re-add it without a model."
               );
             }
 
@@ -397,7 +394,7 @@ export function createCronTool(
                   : `  Type: ${job.type} | Schedule: ${displaySchedule(job)}`
               );
               if (job.model) {
-                lines.push(`  Model: ${job.model} (runs in separate session${job.notify ? ", notifies parent" : ""}${job.extensions ? ", extensions" : ""}${job.skills ? ", skills" : ""})`);
+                lines.push(`  Model: ${job.model} (runs in subagent${job.notify ? ", notifies parent" : ""}${job.extensions ? ", extensions" : ""}${job.skills ? ", skills" : ""})`);
               }
               lines.push(`  Prompt: ${job.prompt}`);
               lines.push(`  ${lastStr} ${nextStr ? `| ${nextStr}` : ""}`);
