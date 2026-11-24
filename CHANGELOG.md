@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `jobsVisible` setting and a `/schedule-prompt hide|show|toggle` argument that collapses the widget to its single `Scheduled Prompts (N jobs)` header line without unmounting it, so the job count stays visible with the table out of the way. Distinct from `widgetVisible: false`, which removes the widget entirely. Also togglable from `/schedule-prompt → Settings → Jobs visibility`, and persisted like the other settings.
 
 ### Changed
-- `schedule_prompt` is now **inactive by default** (opt-in activation): at `session_start` the tool is removed from the active tool set while every other active tool is preserved, so the agent cannot schedule prompts until the user runs `/schedule-prompt`, which re-activates it (deduplicated) for the session
+- `schedule_prompt` stays in the active tool set in every session. The extension does not toggle it on demand, because a change to the active tool set changes the prompt prefix and busts the provider cache
 - The interactive add flow now collects the prompt in a multi-line editor. `Ctrl+J` and `Shift+Enter` insert newlines, and `Enter` submits. `Shift+Enter` works only in terminals that report modified Enter keys.
 
 ### Fixed

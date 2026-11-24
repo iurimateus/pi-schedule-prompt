@@ -18,7 +18,7 @@ Schedule future prompts with natural language:
 
 ### Core `schedule_prompt` Tool
 
-- **Opt-in activation**: the tool is **inactive by default** — it is removed from the active tool set at session start (all other tools stay active) and activated by running `/schedule-prompt`
+- **Always available**: the tool stays in the active tool set in every session, so the prompt prefix stays stable. Activation on demand would bust the provider cache
 - **Natural language scheduling**: "schedule X in 5 minutes", "every hour do Y"
 - **Multiple formats**: Cron expressions, intervals, ISO timestamps, relative time (+5m, +1h)
 - **Job types**:
@@ -99,13 +99,13 @@ Then run `pi` normally; the extension auto-discovers.
 
 ## Usage
 
-### Activation (opt-in)
+### Always available
 
-`schedule_prompt` is **inactive by default**. At session start the extension drops it from the active tool set (every other active tool is preserved), so the agent cannot schedule anything until you opt in. Run `/schedule-prompt` to activate the tool for the session.
+`schedule_prompt` stays in the active tool set in every session. The extension does not toggle it on demand, because a change to the active tool set changes the prompt prefix and busts the provider cache.
 
-### LLM-driven (after activation)
+### LLM-driven
 
-Once activated with `/schedule-prompt`, the agent uses `schedule_prompt` automatically when you want to schedule, defer, or be reminded:
+The agent uses `schedule_prompt` automatically when you want to schedule, defer, or be reminded:
 
 ```
 You: Remind me to check the deployment logs in 10 minutes
@@ -133,7 +133,7 @@ Collapsing with `/schedule-prompt hide` (or `show` / `toggle`) reduces it to a s
 
 ### Manual commands
 
-`/schedule-prompt` activates the `schedule_prompt` tool for the session (the opt-in for the default-disabled tool). Run it bare to open a two-item menu; pass `hide`, `show`, or `toggle` to only switch the widget between collapsed and expanded and return.
+`/schedule-prompt` opens the management menu. Run it bare to open a two-item menu; pass `hide`, `show`, or `toggle` to only switch the widget between collapsed and expanded and return.
 
 - **Jobs** — selectable menus list scheduled prompts in this cwd. Your session's jobs are listed first; jobs bound to other sessions remain visible and read-only. Choose a job to enable/disable it, change its scope (session-only ↔ shared with pi sessions in this cwd), or remove it after confirmation. Add opens the guided name/type/schedule/prompt/scope flow. The prompt step accepts multiple lines: `Enter` submits, and `Ctrl+J` or `Shift+Enter` adds a newline. `Shift+Enter` needs terminal support. Clean up disabled jobs removes only jobs available to this session, after confirmation. Choose **Quit** to exit Jobs. Every step of the add flow can be revisited: `Back` (last option on each selector, and on the confirm dialog as `No`) or `Esc` returns to the previous step, keeping the answers already given; stepping back from the job name exits.
 - **Settings** — widget visibility (shown/hidden), jobs visibility (shown/hidden, which collapses the widget to its one-line header), and the default scope for new jobs (`Bind new jobs to session: yes/no`). Persists across sessions.
