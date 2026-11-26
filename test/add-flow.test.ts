@@ -1,13 +1,13 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join, relative } from "node:path";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import { CronScheduler } from "../src/scheduler.js";
 import type { ScheduleSettings } from "../src/settings.js";
 import type { CronStorage } from "../src/storage.js";
 import type { CronJob } from "../src/types.js";
-import { runAddFlow } from "../src/ui/add-flow.js";
+import { ENTER_SESSION_ID, runAddFlow } from "../src/ui/add-flow.js";
 
 interface HarnessOptions {
   cwd?: string;
@@ -137,72 +137,177 @@ function writeRecord(dir: string, spec: RecordSpec): void {
 function waitOptions(ui: { select: { mock: { calls: unknown[][] } } }): string[] {
   const call = ui.select.mock.calls.find((c) => c[0] === "Wait for");
   const options = (call?.[1] as string[] | undefined) ?? [];
-  // The trailing Back option is covered by the navigation tests.
-  return options.filter((option) => option !== "Back");
+  // Back and the freeform id entry are covered by their own tests.
+  return options.filter((option) => option !== "Back" && option !== ENTER_SESSION_ID);
+}
+
+/** Temp directory; `git` makes it a repository by giving it a `.git` marker. */
+function makeDir(git: boolean): string {
+  const dir = mkdtempSync(join(tmpdir(), "add-flow-cwd-"));
+  if (git) mkdirSync(join(dir, ".git"));
+  return dir;
+}
+
+/** Temp directory that is a linked worktree of the repository at `repo`. */
+function makeWorktree(repo: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "add-flow-worktree-"));
+  const gitDir = join(repo, ".git", "worktrees", basename(dir));
+  // Git creates the per-worktree git dir; the `.git` file points at it.
+  mkdirSync(gitDir, { recursive: true });
+  writeFileSync(join(dir, ".git"), `gitdir: ${gitDir}\n`);
+  return dir;
+}
+
+/** Temp directory that is a main Jujutsu workspace: `.jj/repo` is a directory. */
+function makeJjRepo(): string {
+  const dir = mkdtempSync(join(tmpdir(), "add-flow-jj-"));
+  mkdirSync(join(dir, ".jj", "repo"), { recursive: true });
+  return dir;
+}
+
+/** Temp directory that is a secondary Jujutsu workspace of the repository at `repo`. */
+function makeJjWorkspace(repo: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "add-flow-workspace-"));
+  const jjDir = join(dir, ".jj");
+  mkdirSync(jjDir);
+  writeFileSync(join(jjDir, "repo"), relative(jjDir, join(repo, ".jj", "repo")));
+  return dir;
+}
+
+/** Register a live root session working in `cwd`. */
+function liveRoot(
+  dir: string,
+  id: string,
+  cwd: string,
+  updatedAt: number,
+  extra: Partial<RecordSpec> = {},
+): void {
+  writeRecord(dir, {
+    sessionId: id,
+    cwd,
+    sessionFile: writeSessionFile(dir, id, rootHeader(id)),
+    updatedAt,
+    ...extra,
+  });
 }
 
 describe("runAddFlow wait picker", () => {
-  it("offers only live, non-exited root sessions in the current cwd", async () => {
+  it("offers live root sessions of this repository across its worktrees", async () => {
+    const repo = makeDir(true);
+    const worktree = makeWorktree(repo);
+    const otherRepo = makeDir(true);
+    const loose = makeDir(false);
     const dir = makeCoordinatorDir();
-    writeRecord(dir, { sessionId: "root", sessionFile: writeSessionFile(dir, "root", rootHeader("root")), updatedAt: 100 });
+    liveRoot(dir, "here", repo, 100);
+    liveRoot(dir, "worktree", worktree, 300);
+    liveRoot(dir, "other-repo", otherRepo, 400);
+    liveRoot(dir, "loose", loose, 500);
     writeRecord(dir, {
       sessionId: "child",
-      sessionFile: writeSessionFile(dir, "child", { ...rootHeader("child"), parentSession: "/tmp/parent.jsonl" }),
-      updatedAt: 200,
+      cwd: repo,
+      sessionFile: writeSessionFile(dir, "child", {
+        ...rootHeader("child"),
+        parentSession: "/tmp/parent.jsonl",
+      }),
+      updatedAt: 600,
     });
-    writeRecord(dir, { sessionId: "elsewhere", sessionFile: writeSessionFile(dir, "elsewhere", rootHeader("elsewhere")), cwd: "/other", updatedAt: 300 });
-    writeRecord(dir, { sessionId: "dead", sessionFile: writeSessionFile(dir, "dead", rootHeader("dead")), pid: 999999999, updatedAt: 400 });
-    writeRecord(dir, { sessionId: "exited", sessionFile: writeSessionFile(dir, "exited", rootHeader("exited")), status: "exited", updatedAt: 500 });
+    liveRoot(dir, "dead", repo, 700, { pid: 999999999 });
+    liveRoot(dir, "exited", repo, 800, { status: "exited" });
 
-    const h = makeHarness(["my wait", "the prompt"], { coordinatorDir: dir, pickType: WAIT });
+    const h = makeHarness(["my wait", "the prompt"], {
+      coordinatorDir: dir,
+      cwd: repo,
+      pickType: WAIT,
+    });
     await runAddFlow(h.ctx, h.storage, h.scheduler, h.settings, "current-session", dir);
 
-    expect(waitOptions(h.ui)).toEqual(["root [settled]"]);
+    // A worktree of the same repository stays selectable. A checkout of another
+    // repository, a directory outside any repository, a child session, a dead
+    // process and an exited record do not reach the list.
+    expect(waitOptions(h.ui)).toEqual(["worktree [settled]", "here [settled]"]);
+    expect(h.addJob).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers live root sessions of this repository across its Jujutsu workspaces", async () => {
+    const repo = makeJjRepo();
+    const workspace = makeJjWorkspace(repo);
+    const dir = makeCoordinatorDir();
+    liveRoot(dir, "here", repo, 100);
+    liveRoot(dir, "workspace", workspace, 200);
+
+    const h = makeHarness(["my wait", "the prompt"], {
+      coordinatorDir: dir,
+      cwd: repo,
+      pickType: WAIT,
+    });
+    await runAddFlow(h.ctx, h.storage, h.scheduler, h.settings, "current-session", dir);
+
+    // A secondary Jujutsu workspace of the same repository stays selectable.
+    expect(waitOptions(h.ui)).toEqual(["workspace [settled]", "here [settled]"]);
     expect(h.addJob).toHaveBeenCalledTimes(1);
   });
 
   it("omits records whose session header is malformed or belongs to another id", async () => {
+    const repo = makeDir(true);
     const dir = makeCoordinatorDir();
-    writeRecord(dir, { sessionId: "good", sessionFile: writeSessionFile(dir, "good", rootHeader("good")), updatedAt: 10 });
-    writeRecord(dir, { sessionId: "malformed", sessionFile: writeSessionFile(dir, "malformed", "not json"), updatedAt: 20 });
-    writeRecord(dir, { sessionId: "missing", sessionFile: join(dir, "absent.jsonl"), updatedAt: 30 });
-    writeRecord(dir, { sessionId: "no-file", updatedAt: 40 });
+    liveRoot(dir, "good", repo, 10);
+    writeRecord(dir, {
+      sessionId: "malformed",
+      cwd: repo,
+      sessionFile: writeSessionFile(dir, "malformed", "not json"),
+      updatedAt: 20,
+    });
+    writeRecord(dir, {
+      sessionId: "missing",
+      cwd: repo,
+      sessionFile: join(dir, "absent.jsonl"),
+      updatedAt: 30,
+    });
+    writeRecord(dir, { sessionId: "no-file", cwd: repo, updatedAt: 40 });
     writeRecord(dir, {
       sessionId: "mismatched",
+      cwd: repo,
       sessionFile: writeSessionFile(dir, "mismatched", rootHeader("different-id")),
       updatedAt: 50,
     });
     writeRecord(dir, {
       sessionId: "invalid-parent",
-      sessionFile: writeSessionFile(dir, "invalid-parent", { ...rootHeader("invalid-parent"), parentSession: 7 }),
+      cwd: repo,
+      sessionFile: writeSessionFile(dir, "invalid-parent", {
+        ...rootHeader("invalid-parent"),
+        parentSession: 7,
+      }),
       updatedAt: 60,
     });
 
-    const h = makeHarness(["w", "p"], { coordinatorDir: dir, pickType: WAIT });
+    const h = makeHarness(["w", "p"], { coordinatorDir: dir, cwd: repo, pickType: WAIT });
     await runAddFlow(h.ctx, h.storage, h.scheduler, h.settings, "current-session", dir);
 
     expect(waitOptions(h.ui)).toEqual(["good [settled]"]);
   });
 
   it("orders candidates by updatedAt descending", async () => {
+    const repo = makeDir(true);
     const dir = makeCoordinatorDir();
-    writeRecord(dir, { sessionId: "old", sessionFile: writeSessionFile(dir, "old", rootHeader("old")), updatedAt: 100 });
-    writeRecord(dir, { sessionId: "mid", sessionFile: writeSessionFile(dir, "mid", rootHeader("mid")), updatedAt: 200 });
-    writeRecord(dir, { sessionId: "newest", sessionFile: writeSessionFile(dir, "newest", rootHeader("newest")), updatedAt: 300 });
+    liveRoot(dir, "old", repo, 100);
+    liveRoot(dir, "mid", repo, 200);
+    liveRoot(dir, "newest", repo, 300);
 
-    const h = makeHarness(["w", "p"], { coordinatorDir: dir, pickType: WAIT });
+    const h = makeHarness(["w", "p"], { coordinatorDir: dir, cwd: repo, pickType: WAIT });
     await runAddFlow(h.ctx, h.storage, h.scheduler, h.settings, "current-session", dir);
 
     expect(waitOptions(h.ui)).toEqual(["newest [settled]", "mid [settled]", "old [settled]"]);
   });
 
   it("marks the current session and persists the chosen target", async () => {
+    const repo = makeDir(true);
     const dir = makeCoordinatorDir();
-    writeRecord(dir, { sessionId: "target", sessionFile: writeSessionFile(dir, "target", rootHeader("target")), updatedAt: 200 });
-    writeRecord(dir, { sessionId: "current-session", sessionFile: writeSessionFile(dir, "current-session", rootHeader("current-session")), updatedAt: 100 });
+    liveRoot(dir, "target", repo, 200);
+    liveRoot(dir, "current-session", repo, 100);
 
     const h = makeHarness(["my wait", "the prompt"], {
       coordinatorDir: dir,
+      cwd: repo,
       pickType: WAIT,
       pickWait: (options) => options.find((o) => o.startsWith("target ")),
     });
@@ -220,25 +325,95 @@ describe("runAddFlow wait picker", () => {
     );
     expect(h.ui.confirm.mock.calls[0][1]).toContain("target");
   });
+});
 
-  it("notifies and saves nothing when no live sessions are available", async () => {
+describe("runAddFlow wait target freeform entry", () => {
+  /** Picker reply that opens the session-id prompt. */
+  const typeId = (options: string[]) => options.find((o) => o === ENTER_SESSION_ID);
+
+  it("accepts an active session of another repository typed by id", async () => {
+    const repo = makeDir(true);
+    const otherRepo = makeDir(true);
     const dir = makeCoordinatorDir();
-    const h = makeHarness(["my wait"], { coordinatorDir: dir, pickType: WAIT });
+    liveRoot(dir, "other", otherRepo, 100);
+
+    const h = makeHarness(["my wait", "other", "the prompt"], {
+      coordinatorDir: dir,
+      cwd: repo,
+      pickType: WAIT,
+      pickWait: typeId,
+    });
     await runAddFlow(h.ctx, h.storage, h.scheduler, h.settings, "current-session", dir);
 
-    expect(h.ui.notify).toHaveBeenCalledWith(expect.stringContaining("No live sessions"), "info");
+    // The list hides the foreign repository; a typed id still reaches it.
     expect(waitOptions(h.ui)).toEqual([]);
-    expect(h.addJob).not.toHaveBeenCalled();
+    expect(h.ui.notify).toHaveBeenCalledWith(expect.stringContaining("No live sessions"), "info");
+    expect(h.addJob.mock.calls[0][0]).toMatchObject<Partial<CronJob>>({
+      type: "wait",
+      session: "other",
+    });
   });
+
+  it("re-prompts after an inactive id and saves the next valid one", async () => {
+    const repo = makeDir(true);
+    const dir = makeCoordinatorDir();
+    liveRoot(dir, "gone", repo, 100, { status: "exited" });
+    liveRoot(dir, "live", repo, 200);
+
+    const h = makeHarness(["w", "gone", "live", "p"], {
+      coordinatorDir: dir,
+      cwd: repo,
+      pickType: WAIT,
+      pickWait: typeId,
+    });
+    await runAddFlow(h.ctx, h.storage, h.scheduler, h.settings, "current-session", dir);
+
+    expect(h.ui.notify).toHaveBeenCalledWith("Session gone is not active", "error");
+    expect(h.ui.select.mock.calls.filter((c) => c[0] === "Wait for")).toHaveLength(2);
+    expect(h.addJob.mock.calls[0][0]).toMatchObject<Partial<CronJob>>({ session: "live" });
+  });
+
+  it("re-prompts after an id the coordinator does not track", async () => {
+    const repo = makeDir(true);
+    const dir = makeCoordinatorDir();
+    liveRoot(dir, "live", repo, 100);
+
+    const h = makeHarness(["w", "ghost", "live", "p"], {
+      coordinatorDir: dir,
+      cwd: repo,
+      pickType: WAIT,
+      pickWait: typeId,
+    });
+    await runAddFlow(h.ctx, h.storage, h.scheduler, h.settings, "current-session", dir);
+
+    expect(h.ui.notify).toHaveBeenCalledWith(
+      "No session with id ghost is tracked by the coordinator",
+      "error",
+    );
+    expect(h.addJob.mock.calls[0][0]).toMatchObject<Partial<CronJob>>({ session: "live" });
+  });
+
+  it("trims the typed id before it validates it", async () => {
+    const repo = makeDir(true);
+    const dir = makeCoordinatorDir();
+    liveRoot(dir, "live", repo, 100);
+
+    const h = makeHarness(["w", "  live  ", "p"], {
+      coordinatorDir: dir,
+      cwd: repo,
+      pickType: WAIT,
+      pickWait: typeId,
+    });
+    await runAddFlow(h.ctx, h.storage, h.scheduler, h.settings, "current-session", dir);
+
+    expect(h.addJob.mock.calls[0][0]).toMatchObject<Partial<CronJob>>({ session: "live" });
+  });
+});
 
 describe("runAddFlow wait delivery", () => {
   function makeWaitDir(): string {
     const dir = makeCoordinatorDir();
-    writeRecord(dir, {
-      sessionId: "target",
-      sessionFile: writeSessionFile(dir, "target", rootHeader("target")),
-      updatedAt: 100,
-    });
+    liveRoot(dir, "target", "/work", 100);
     return dir;
   }
 
@@ -272,6 +447,4 @@ describe("runAddFlow wait delivery", () => {
     });
     expect(h.ui.confirm.mock.calls[0][1]).toContain("Delivers to: this session");
   });
-});
-
 });

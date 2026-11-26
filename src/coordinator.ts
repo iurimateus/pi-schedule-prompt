@@ -10,6 +10,7 @@
 import { closeSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { repositoryKey } from "./repository.js";
 
 export type SessionStatus = "working" | "settled" | "exited";
 
@@ -181,12 +182,15 @@ export function checkWaitTarget(stateDir: string, sessionId: string): WaitTarget
 }
 
 /**
- * Live, non-exited root session records in `cwd`, newest first, without child
- * sessions. The wait-session picker's candidate list.
+ * Live, non-exited root session records of the repository holding `cwd`,
+ * newest first. The wait-session picker's candidate list. Another workspace of
+ * the same repository stays selectable; a session of an unrelated repository
+ * does not, unless the user types its id by hand.
  */
 export function listWaitTargets(stateDir: string, cwd: string): SessionRecord[] {
+  const repository = repositoryKey(cwd);
   return listRecords(stateDir)
     .filter((r) => isActiveSession(r) && isRootSession(r.sessionFile, r.sessionId))
-    .filter((r) => r.cwd === cwd)
+    .filter((r) => repositoryKey(r.cwd) === repository)
     .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
 }

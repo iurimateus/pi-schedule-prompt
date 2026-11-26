@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { CronScheduler } from "../src/scheduler.js";
 import type { ScheduleSettings } from "../src/settings.js";
 import type { CronStorage } from "../src/storage.js";
-import { runAddFlow } from "../src/ui/add-flow.js";
+import { ENTER_SESSION_ID, runAddFlow } from "../src/ui/add-flow.js";
 
 // Scripted dialog replies. FIRST/LAST pick by position so tests do not hardcode
 // every option string; ESC is a dismissed dialog (undefined / false).
@@ -395,6 +395,37 @@ describe("runAddFlow back navigation", () => {
     expect(h.addJob).not.toHaveBeenCalled();
     expect(h.scheduler.addJob).not.toHaveBeenCalled();
     expect(h.ui.notify).not.toHaveBeenCalled();
+  });
+
+  it("returns to the Wait for picker when the session-id prompt is dismissed", async () => {
+    const dir = makeCoordinatorDir();
+    writeWaitTarget(dir, "target", 100);
+    const h = makeHarness([
+      ["Job Name", "wait job"],
+      ["Job Type", WAIT],
+      ["Wait for", ENTER_SESSION_ID],
+      ["Session ID", ESC],
+      ["Wait for", FIRST],
+      ["Deliver to", FIRST],
+      ["Prompt", "the prompt"],
+      ["Confirm", true],
+    ]);
+
+    await runAddFlow(h.ctx, h.storage, h.scheduler, h.settings, "owner", dir);
+
+    // A dismissed id prompt reopens the list; it does not abandon the flow.
+    expect(titles(h.calls)).toEqual([
+      "Job Name",
+      "Job Type",
+      "Wait for",
+      "Session ID",
+      "Wait for",
+      "Deliver to",
+      "Prompt",
+      "Confirm",
+    ]);
+    expect(h.addJob).toHaveBeenCalledTimes(1);
+    expect(h.addJob.mock.calls[0][0]).toMatchObject({ type: "wait", session: "target" });
   });
 
   it("re-prompts an invalid schedule with its error and returns to Job Type when dismissed", async () => {

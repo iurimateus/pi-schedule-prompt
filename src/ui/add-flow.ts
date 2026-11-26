@@ -2,15 +2,18 @@
  * Interactive add flow for `/schedule-prompt`.
  * A navigable wizard: name → type → schedule (re-polling while invalid) →
  * prompt → scope → confirm for clock jobs, or name → type → live-session
- * picker → prompt → confirm for wait jobs. Every step can go back - dialog
- * dismissal and selecting `Back` retreat one step - and the step order is
- * re-derived from the chosen type, so switching type skips or inserts steps.
+ * picker → deliver-to → prompt → confirm for wait jobs. The picker lists the
+ * live sessions of the creator's repository and accepts a typed id for any
+ * active session. Every step can go back - dialog dismissal and selecting
+ * `Back` retreat one step - and the step order is re-derived from the chosen
+ * type, so switching type skips or inserts steps.
  * Saves and schedules the new job; going back from the first step exits.
  */
 
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { nanoid } from "nanoid";
 import {
+  checkWaitTarget,
   DEFAULT_COORDINATOR_DIR,
   listWaitTargets,
   type SessionRecord,
@@ -107,19 +110,12 @@ export async function runAddFlow(
         break;
       }
       case "waitTarget": {
-        const targets = listWaitTargets(coordinatorDir, ctx.cwd);
-        if (targets.length === 0) {
-          ctx.ui.notify("No live sessions to wait for in this working directory", "info");
-          return;
-        }
-        const labels = targets.map((t) => waitTargetLabel(t, mySessionId));
-        const choice = await ctx.ui.select("Wait for", [...labels, BACK]);
-        const target = choice ? targets[labels.indexOf(choice)] : undefined;
-        if (!target) {
+        const target = await pickWaitTarget(ctx, coordinatorDir, ctx.cwd, mySessionId);
+        if (target === BACK) {
           if (!goBack()) return;
           break;
         }
-        draft.waitTarget = target.sessionId;
+        draft.waitTarget = target;
         index += 1;
         break;
       }
@@ -242,4 +238,52 @@ export async function runAddFlow(
 function waitTargetLabel(record: SessionRecord, mySessionId: string | undefined): string {
   const current = record.sessionId === mySessionId ? " · current" : "";
   return `${record.sessionId} [${record.status}]${current}`;
+}
+
+/** Picker option that opens the freeform session-id prompt. */
+export const ENTER_SESSION_ID = "Type a session id (any active session)";
+
+/**
+ * Resolve the wait target for the picker step. The list holds the live root
+ * sessions of the creator's repository - every workspace of it - and one
+ * freeform entry: a typed id may name any active session, including one of an
+ * unrelated repository. Returns `BACK` when the user retreats from the list;
+ * dismissing the id prompt reopens the list, and an accepted id returns as the
+ * target.
+ */
+async function pickWaitTarget(
+  ctx: ExtensionCommandContext,
+  coordinatorDir: string,
+  cwd: string,
+  mySessionId: string | undefined,
+): Promise<string> {
+  for (;;) {
+    const targets = listWaitTargets(coordinatorDir, cwd);
+    if (targets.length === 0) {
+      ctx.ui.notify("No live sessions in this repository — type a session id", "info");
+    }
+    const labels = targets.map((t) => waitTargetLabel(t, mySessionId));
+    const choice = await ctx.ui.select("Wait for", [...labels, ENTER_SESSION_ID, BACK]);
+    if (choice === undefined || choice === BACK) return BACK;
+
+    const picked = targets[labels.indexOf(choice)];
+    if (picked) return picked.sessionId;
+
+    const typed = await ctx.ui.input(
+      "Session ID",
+      "Any active session id, even one of another repository",
+    );
+    const id = (typed ?? "").trim();
+    // A dismissed or blank prompt reopens the list instead of abandoning the
+    // whole flow, so no collected answer is lost.
+    if (id.length === 0) continue;
+    const check = checkWaitTarget(coordinatorDir, id);
+    if (check === "ok") return id;
+    ctx.ui.notify(
+      check === "untracked"
+        ? `No session with id ${id} is tracked by the coordinator`
+        : `Session ${id} is not active`,
+      "error",
+    );
+  }
 }
