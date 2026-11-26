@@ -11,6 +11,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type AutocompleteItem, Text } from "@earendil-works/pi-tui";
+import { registerSchedulePromptApi } from "./api.js";
 import { CronScheduler } from "./scheduler.js";
 import { loadSettings, type ScheduleSettings, saveSettings } from "./settings.js";
 import { CronStorage } from "./storage.js";
@@ -60,10 +61,12 @@ export default async function (pi: ExtensionAPI) {
   let widget: CronWidget;
   // Subagent teardowns still running, from every scheduler this extension has
   // created. pi (>=1.5) always emits session_shutdown before replacing a
-  // session, but initializeSession also tears down defensively when a
-  // session_start arrives without one; tracking here keeps that path from
-  // dropping in-flight teardowns. Awaited, bounded, on session_shutdown.
+  // session, but initializeSession also tears down defensively; tracking here
+  // keeps that path from dropping in-flight teardowns. Awaited, bounded, on shutdown.
   const pendingTeardowns = new Set<Promise<void>>();
+  // Session that owns the live resources; undefined between shutdown and the
+  // next session_start. The extension API reads it through a closure.
+  let currentSessionId: string | undefined;
   // Refreshed in initializeSession; mutated by Settings submenu. The tool and
   // widget read via closure so toggles take effect without re-registering.
   let settings: ScheduleSettings = {};
@@ -136,6 +139,14 @@ export default async function (pi: ExtensionAPI) {
   );
   pi.registerTool(tool);
 
+  // Other extensions discover this handle through `pi.events`; see src/api.ts.
+  registerSchedulePromptApi(pi, {
+    current: () =>
+      storage && scheduler && currentSessionId
+        ? { storage, scheduler, sessionId: currentSessionId }
+        : undefined,
+  });
+
   // --- Session initialization ---
 
   const initializeSession = (ctx: any) => {
@@ -162,6 +173,7 @@ export default async function (pi: ExtensionAPI) {
       );
     }
     scheduler = new CronScheduler(storage, pi, ctx);
+    currentSessionId = ctx.sessionManager.getSessionId();
     widget = new CronWidget(
       storage,
       scheduler,
@@ -180,6 +192,8 @@ export default async function (pi: ExtensionAPI) {
   };
 
   const cleanupSession = (ctx: any): void => {
+    // Invalidate the extension API until the next session initializes.
+    currentSessionId = undefined;
     // Stop scheduler (timers clear synchronously; subagent teardown settles later)
     if (scheduler) {
       const stopped = scheduler.stop();

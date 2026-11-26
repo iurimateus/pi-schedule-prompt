@@ -148,7 +148,7 @@ Collapsing with `/schedule-prompt hide` (or `show` / `toggle`) reduces it to a s
 | `prompt` | string | on `add` | Prompt text to execute when the job fires |
 | `jobId` | string | on `remove` / `enable` / `disable` / `update` | Target job |
 | `type` | `cron` \| `once` \| `interval` \| `idle` \| `wait` | no | Job type. Default `cron`; use `once` for relative times like `+10s`, `idle` to fire after inactivity, or `wait` for inline delivery once a session is idle (no schedule needed) |
-| `dedupeKey` | non-empty string | no | Wait jobs only. Session-scoped idempotency key: an enabled wait job with the same key for the same session is reused instead of creating another. A delivered or disabled job no longer matches |
+| `dedupeKey` | non-empty string | no | Wait jobs only. Session-scoped idempotency key: an enabled wait job with the same key for the same session is reused instead of creating another. A delivered or disabled job no longer matches. See [Extension API](#extension-api-other-extensions) |
 | `description` | string | no | Free-form note |
 | `model` | non-empty string | no | If set, run the prompt in a fresh in-process agent session with this model instead of injecting into the current chat. Accepts fuzzy names (`haiku`, `sonnet`) or `provider/model-id`. To switch a job from subagent back to inline mode, remove and re-add it without `model` (no in-place clearing) |
 | `notify` | boolean | no | Subagent-only. If `true`, the parent agent is woken to react to the subagent's result. Default `false` (result shown in chat, parent not interrupted). No-op for inline (no-model) jobs — the prompt itself already wakes the parent. Recommended only for low-frequency jobs |
@@ -233,6 +233,74 @@ Toggle the default for new jobs in `/schedule-prompt → Settings → Bind new j
 - Auto-refreshes every 30 seconds
 - Visibility togglable via `/schedule-prompt → Settings`; persists across sessions (and package upgrades) in `<cwd>/.pi/schedule-prompts-settings.json` (trusted projects only), with `<agentDir>/schedule-prompts-settings.json` as the global default
 - Status icons: `✓` enabled, `✗` disabled, `⟳` running, `!` error
+
+## Extension API (other extensions)
+
+Another pi extension can schedule a self-wait in the running session. It does not need this package's storage or scheduler. Both extensions must run in the same pi process, because the transport is pi's in-process `pi.events` bus.
+
+### Discovery protocol
+
+| Step | Channel | Payload |
+|------|---------|---------|
+| Caller asks | `schedule-prompt:api-request` | `{ requestId: string }` |
+| This extension answers | `schedule-prompt:api` | `{ requestId, api }` or `{ requestId, error }` |
+
+The extension registers its listener when pi loads it. A request without a non-empty string `requestId` gets no answer. A caller must ignore answers whose `requestId` does not match its own request.
+
+The package exports the helpers and constants from `pi-schedule-prompt/dist/api.js`:
+
+```ts
+import {
+  SCHEDULE_PROMPT_API_VERSION,
+  discoverSchedulePromptApi,
+} from "pi-schedule-prompt/dist/api.js";
+
+const api = await discoverSchedulePromptApi(pi); // undefined after 2 s if this extension is absent
+if (api && api.version === SCHEDULE_PROMPT_API_VERSION) {
+  const result = api.scheduleSelfWait({
+    prompt: "check the build queue",
+    dedupeKey: "build-check",
+  });
+  if (!result.ok) {
+    // Log result.error; the call does not throw.
+  }
+}
+```
+
+`discoverSchedulePromptApi(pi, { timeoutMs })` resolves `undefined` when no extension answers. The default timeout is 2000 ms. Call it again after `session_start` if the load order can vary.
+
+Without the helper, emit `{ requestId }` on `schedule-prompt:api-request` and listen on `schedule-prompt:api` with your own timeout.
+
+### Handle
+
+```ts
+interface SchedulePromptApi {
+  readonly version: 1;
+  scheduleSelfWait(options: {
+    prompt: string; // text to deliver into the session
+    dedupeKey?: string; // session-scoped idempotency key
+    name?: string; // defaults to job-<random>
+    description?: string;
+  }): { ok: true; job: CronJob; created: boolean } | { ok: false; error: string };
+}
+```
+
+`scheduleSelfWait` does not throw. It returns `ok: false` with a reason instead. `created: false` means an enabled job with the same `dedupeKey` already existed, and the call returned it. No new job was stored.
+
+### Lifecycle
+
+- The extension answers discovery from load time. The handle is bound to its own extension instance and cannot address another session.
+- Before the first `session_start` and after `session_shutdown`, a call returns `ok: false` with a retry hint. Retry after the next `session_start`.
+- `session_start` with any reason (startup, resume, reload, fork) replaces the live session resources. The same handle then targets the new session.
+- A self-wait delivers its prompt once, when the session is idle: settled, alive, and with no running pi-subagents. The job then disables with `lastStatus: "success"`, or `"error"` after a failed delivery.
+- Disable or remove the job before delivery to cancel it.
+- Disabled-job cleanup removes it on the next session start or shutdown. You can also remove the job explicitly.
+
+### Guarantees
+
+- **One delivery.** A self-wait delivers one prompt, into the session that hosts the extension. The delivering process disables the job before it sends the prompt, so a later poll tick in that process cannot re-deliver it. The claim uses the shared store without a lock, so two processes that host the same session id can still both deliver.
+- **Session-scoped dedupe.** While an enabled wait job with the same `session` and `dedupeKey` exists, `scheduleSelfWait` returns that job (`created: false`). A delivered, disabled, or removed job no longer matches, so the same key creates a fresh job on the next call.
+- **Same-process atomicity only.** The dedupe lookup, name check, and append share one synchronous load/save. Concurrent callers on the JavaScript thread cannot both create the job. This is not an interprocess lock. Two pi processes can both create a job with the same key.
 
 ## Examples
 
@@ -332,6 +400,7 @@ src/
   scheduler.ts      # Core scheduling engine with croner
   subagent.ts       # Lightweight in-process agent runner (per-task model)
   self-wait.ts      # Self-wait creation path (tool + extension API)
+  api.ts            # Extension-to-extension discovery API on pi.events
   tool.ts           # schedule_prompt tool definition
   ui/
     cron-widget.ts  # Live status widget below editor

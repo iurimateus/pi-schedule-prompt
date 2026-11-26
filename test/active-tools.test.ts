@@ -61,6 +61,8 @@ function makeHarness(initialActive: string[]) {
   const handlers = new Map<string, (event: any, ctx: any) => Promise<void>>();
   const commands = new Map<string, { handler: (args: unknown, ctx: any) => Promise<void> }>();
   const pi = {
+    // The extension answers cross-extension API requests on this bus.
+    events: { on: vi.fn(() => () => {}), emit: vi.fn() },
     registerMessageRenderer: vi.fn(),
     registerTool: vi.fn(),
     registerCommand: vi.fn((name: string, def: any) => {
