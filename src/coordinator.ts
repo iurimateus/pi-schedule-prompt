@@ -160,12 +160,33 @@ function isRootSession(sessionFile: string | undefined, sessionId: string): bool
 }
 
 /**
- * Live, non-exited coordinator records in `cwd`, newest first, without child
+ * A record whose session is still running: not exited and its process alive.
+ */
+export function isActiveSession(record: SessionRecord): boolean {
+  return record.status !== "exited" && isPidAlive(record.pid);
+}
+
+/**
+ * Classify `sessionId` as a wait target: `"untracked"` when the coordinator
+ * holds no record for that exact id, `"inactive"` when the record exists but
+ * its session stopped, `"ok"` otherwise. The tool and the picker share this
+ * check, so a typed id and a picked id accept exactly the same sessions.
+ */
+export type WaitTargetCheck = "ok" | "untracked" | "inactive";
+
+export function checkWaitTarget(stateDir: string, sessionId: string): WaitTargetCheck {
+  const record = readSessionRecord(stateDir, sessionId);
+  if (!record || record.sessionId !== sessionId) return "untracked";
+  return isActiveSession(record) ? "ok" : "inactive";
+}
+
+/**
+ * Live, non-exited root session records in `cwd`, newest first, without child
  * sessions. The wait-session picker's candidate list.
  */
 export function listWaitTargets(stateDir: string, cwd: string): SessionRecord[] {
   return listRecords(stateDir)
-    .filter((r) => r.status !== "exited" && isPidAlive(r.pid) && r.cwd === cwd)
-    .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
-    .filter((r) => isRootSession(r.sessionFile, r.sessionId));
+    .filter((r) => isActiveSession(r) && isRootSession(r.sessionFile, r.sessionId))
+    .filter((r) => r.cwd === cwd)
+    .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
 }

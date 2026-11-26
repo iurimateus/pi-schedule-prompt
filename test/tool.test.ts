@@ -6,12 +6,19 @@ import { createCronTool } from "../src/tool.js";
 import type { CronJob } from "../src/types.js";
 
 /** Create a temp coordinator dir with one record file per entry. */
-function makeCoordinatorDir(records: Array<{ sessionId: string; cwd: string }>): string {
+function makeCoordinatorDir(
+  records: Array<{ sessionId: string; cwd: string; pid?: number; status?: string }>,
+): string {
   const dir = mkdtempSync(join(tmpdir(), "schedule-wait-test-"));
   for (const record of records) {
     writeFileSync(
       join(dir, `${encodeURIComponent(record.sessionId)}.json`),
-      JSON.stringify({ sessionId: record.sessionId, cwd: record.cwd, pid: 1, status: "working" }),
+      JSON.stringify({
+        sessionId: record.sessionId,
+        cwd: record.cwd,
+        pid: record.pid ?? process.pid,
+        status: record.status ?? "working",
+      }),
     );
   }
   return dir;
@@ -48,9 +55,9 @@ function makeScheduler() {
   } as any;
 }
 
-// Tool reads ctx.sessionManager.getEntries() (recursion guard), .getSessionId()
-// (session binding on add), and ctx.cwd (wait-target cwd check). Empty entries
-// bypass the guard; a stable mock id lets tests assert what gets persisted.
+// Tool reads ctx.sessionManager.getEntries() (recursion guard) and
+// .getSessionId() (session binding on add). Empty entries bypass the guard; a
+// stable mock id lets tests assert what gets persisted.
 function makeCtx(sessionId = "test-session", cwd = "/work") {
   return {
     sessionManager: {
@@ -606,9 +613,9 @@ describe("schedule_prompt — wait jobs", () => {
     expect(result.details?.error).toContain("not tracked");
   });
 
-  it("rejects a target session in a different working directory", async () => {
+  it("accepts an active target session in a different working directory", async () => {
     const coordinatorDir = makeCoordinatorDir([{ sessionId: "other", cwd: "/elsewhere" }]);
-    const { tool } = buildTool([], () => "session", coordinatorDir);
+    const { tool, storage } = buildTool([], () => "session", coordinatorDir);
     const result = await tool.execute(
       "call",
       { action: "add", type: "wait", prompt: "x", session: "other" } as any,
@@ -616,7 +623,56 @@ describe("schedule_prompt — wait jobs", () => {
       undefined,
       makeCtx("creator-session", "/work"),
     );
-    expect(result.details?.error).toContain("different working directory");
+    expect(result.details?.error).toBeUndefined();
+    const id = result.details?.jobs?.[0].id as string;
+    expect(storage.getJob(id)?.session).toBe("other");
+  });
+
+  it("rejects an exited target session", async () => {
+    const coordinatorDir = makeCoordinatorDir([
+      { sessionId: "gone", cwd: "/work", status: "exited" },
+    ]);
+    const { tool } = buildTool([], () => "session", coordinatorDir);
+    const result = await tool.execute(
+      "call",
+      { action: "add", type: "wait", prompt: "x", session: "gone" } as any,
+      undefined,
+      undefined,
+      makeCtx("creator-session", "/work"),
+    );
+    expect(result.details?.error).toContain("not active");
+  });
+
+  it("rejects a target session whose process is gone", async () => {
+    const coordinatorDir = makeCoordinatorDir([
+      { sessionId: "stale", cwd: "/work", pid: 999999999 },
+    ]);
+    const { tool } = buildTool([], () => "session", coordinatorDir);
+    const result = await tool.execute(
+      "call",
+      { action: "add", type: "wait", prompt: "x", session: "stale" } as any,
+      undefined,
+      undefined,
+      makeCtx("creator-session", "/work"),
+    );
+    expect(result.details?.error).toContain("not active");
+  });
+
+  it("rejects a record whose session id does not match the requested id", async () => {
+    const coordinatorDir = makeCoordinatorDir([{ sessionId: "target", cwd: "/work" }]);
+    writeFileSync(
+      join(coordinatorDir, "target.json"),
+      JSON.stringify({ sessionId: "different", cwd: "/work", pid: process.pid, status: "working" }),
+    );
+    const { tool } = buildTool([], () => "session", coordinatorDir);
+    const result = await tool.execute(
+      "call",
+      { action: "add", type: "wait", prompt: "x", session: "target" } as any,
+      undefined,
+      undefined,
+      makeCtx("creator-session", "/work"),
+    );
+    expect(result.details?.error).toContain("not tracked");
   });
 
   it("rejects a model on a wait job (inline only)", async () => {

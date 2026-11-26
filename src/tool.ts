@@ -1,7 +1,10 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { nanoid } from "nanoid";
-import { DEFAULT_COORDINATOR_DIR, readSessionRecord } from "./coordinator.js";
+import {
+  checkWaitTarget,
+  DEFAULT_COORDINATOR_DIR,
+} from "./coordinator.js";
 import { CronScheduler, displaySchedule, formatLocal } from "./scheduler.js";
 import type { JobScope } from "./settings.js";
 import type { CronStorage } from "./storage.js";
@@ -14,27 +17,23 @@ interface WaitTargetResult {
 }
 
 /**
- * Reject an explicit wait target that the coordinator does not track, or that
- * runs in a different working directory than the creator. Wait jobs deliver
- * inline, and a cross-cwd/target-less job could never observe the session it
- * waits for.
+ * Reject an explicit wait target that the coordinator does not track or that
+ * is no longer active. The creator's working directory does not restrict the
+ * target: a session in another workspace of the same repository can receive
+ * the prompt once it is idle.
  */
-function validateWaitTarget(
-  sessionId: string,
-  cwd: string,
-  coordinatorDir: string,
-): WaitTargetResult {
-  const record = readSessionRecord(coordinatorDir, sessionId);
-  if (!record || record.sessionId !== sessionId) {
+function validateWaitTarget(sessionId: string, coordinatorDir: string): WaitTargetResult {
+  const check = checkWaitTarget(coordinatorDir, sessionId);
+  if (check === "untracked") {
     return {
       ok: false,
       error: `Target session is not tracked by the coordinator: ${sessionId}. Start it first, or omit 'session' to wait for the current session.`,
     };
   }
-  if (record.cwd !== cwd) {
+  if (check === "inactive") {
     return {
       ok: false,
-      error: `Target session ${sessionId} runs in a different working directory (${record.cwd}); wait targets must share the creator's cwd (${cwd}).`,
+      error: `Target session is not active: ${sessionId}. Start it first, or omit 'session' to wait for the current session.`,
     };
   }
   return { ok: true };
@@ -139,13 +138,13 @@ export function createCronTool(
             const mySessionId = ctx.sessionManager.getSessionId();
 
             // Wait jobs have no clock time: `schedule` is a sentinel and an
-            // explicit target must be a tracked session in the same cwd.
+            // explicit target must be a tracked, active session.
             let schedule: string;
             let intervalMs: number | undefined;
             let session: string | undefined;
             if (isWait) {
               if (params.session !== undefined) {
-                const target = validateWaitTarget(params.session, ctx.cwd, coordinatorDir);
+                const target = validateWaitTarget(params.session, coordinatorDir);
                 if (!target.ok) throw new Error(target.error);
               }
               schedule = WAIT_SCHEDULE;
