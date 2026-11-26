@@ -248,6 +248,7 @@ describe("runAddFlow back navigation", () => {
       ["Job Name", "wait job"],
       ["Job Type", WAIT],
       ["Wait for", FIRST],
+      ["Deliver to", FIRST],
       ["Prompt", "first prompt"],
       ["Confirm", ESC],
       ["Prompt", "second prompt"],
@@ -310,6 +311,7 @@ describe("runAddFlow back navigation", () => {
       ["Wait for", LAST],
       ["Job Type", WAIT],
       ["Wait for", FIRST],
+      ["Deliver to", FIRST],
       ["Prompt", "the prompt"],
       ["Confirm", true],
     ]);
@@ -322,6 +324,7 @@ describe("runAddFlow back navigation", () => {
       "Wait for",
       "Job Type",
       "Wait for",
+      "Deliver to",
       "Prompt",
       "Confirm",
     ]);
@@ -341,15 +344,18 @@ describe("runAddFlow back navigation", () => {
     expect(h.addJob.mock.calls[0][0].intervalMs).toBeUndefined();
   });
 
-  it("returns to the Wait for picker when the wait prompt is dismissed", async () => {
+  it("returns to the Deliver to picker and on to Wait for when the wait prompt is dismissed", async () => {
     const dir = makeCoordinatorDir();
     writeWaitTarget(dir, "target", 100);
     const h = makeHarness([
       ["Job Name", "wait job"],
       ["Job Type", WAIT],
       ["Wait for", FIRST],
+      ["Deliver to", FIRST],
       ["Prompt", ESC],
+      ["Deliver to", ESC],
       ["Wait for", FIRST],
+      ["Deliver to", FIRST],
       ["Prompt", "the prompt"],
       ["Confirm", true],
     ]);
@@ -360,8 +366,11 @@ describe("runAddFlow back navigation", () => {
       "Job Name",
       "Job Type",
       "Wait for",
+      "Deliver to",
       "Prompt",
+      "Deliver to",
       "Wait for",
+      "Deliver to",
       "Prompt",
       "Confirm",
     ]);
@@ -421,6 +430,7 @@ describe("runAddFlow back navigation", () => {
       ["Schedule", ESC],
       ["Job Type", WAIT],
       ["Wait for", FIRST],
+      ["Deliver to", FIRST],
       ["Prompt", "the prompt"],
       ["Confirm", true],
     ]);
@@ -433,10 +443,44 @@ describe("runAddFlow back navigation", () => {
       "Schedule",
       "Job Type",
       "Wait for",
+      "Deliver to",
       "Prompt",
       "Confirm",
     ]);
     expect(h.addJob).toHaveBeenCalledTimes(1);
     expect(h.addJob.mock.calls[0][0]).toMatchObject({ type: "wait", session: "target" });
   });
+
+  it("returns to the Wait for picker when Back is chosen on Deliver to", async () => {
+    const dir = makeCoordinatorDir();
+    writeWaitTarget(dir, "target", 100);
+    const h = makeHarness([
+      ["Job Name", "wait job"],
+      ["Job Type", WAIT],
+      ["Wait for", FIRST],
+      ["Deliver to", LAST],
+      ["Wait for", FIRST],
+      ["Deliver to", FIRST],
+      ["Prompt", "the prompt"],
+      ["Confirm", true],
+    ]);
+
+    await runAddFlow(h.ctx, h.storage, h.scheduler, h.settings, "owner", dir);
+
+    expect(titles(h.calls)).toEqual([
+      "Job Name",
+      "Job Type",
+      "Wait for",
+      "Deliver to",
+      "Wait for",
+      "Deliver to",
+      "Prompt",
+      "Confirm",
+    ]);
+    const delivery = selectCalls(h.calls).find((call) => call.title === "Deliver to");
+    expect(delivery?.options[delivery.options.length - 1]).toBe("Back");
+    expect(h.addJob).toHaveBeenCalledTimes(1);
+    expect(h.addJob.mock.calls[0][0]).toMatchObject({ type: "wait", deliverTo: "target" });
+  });
+
 });

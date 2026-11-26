@@ -124,6 +124,12 @@ export function createCronTool(
               throw new Error("'wait' jobs run inline only and do not accept a 'model'.");
             }
 
+            // `deliverTo` picks the destination chat for a wait job; a clock
+            // job always delivers where it fires.
+            if (!isWait && params.deliverTo !== undefined) {
+              throw new Error("'deliverTo' applies to 'wait' jobs only.");
+            }
+
             // Defense-in-depth - the schema enforces minLength: 1, but direct
             // callers can bypass the schema.
             if (isWait && params.session !== undefined && params.session.length === 0) {
@@ -170,6 +176,7 @@ export function createCronTool(
               skills: params.skills,
               session,
               ownerSession: isWait ? mySessionId : undefined,
+              deliverTo: isWait ? (params.deliverTo ?? "target") : undefined,
             };
 
             storage.addJob(job);
@@ -182,7 +189,7 @@ export function createCronTool(
               ? `\nModel: ${job.model} (runs in subagent${job.notify ? ", notifies parent" : ""}${job.extensions ? ", extensions" : ""}${job.skills ? ", skills" : ""})`
               : "";
             const waitLine = isWait
-              ? `\nWaits for session: ${job.session}\nOwner session: ${job.ownerSession}`
+              ? `\nWaits for session: ${job.session}\nDelivers to: ${job.deliverTo === "owner" ? "this session (once the target is idle)" : "the waited-on session"}\nFallback: this session if the target exits first`
               : `\nSchedule: ${displaySchedule(job)}`;
             return {
               content: [
@@ -312,6 +319,9 @@ export function createCronTool(
             if (job.type === "wait" && params.model !== undefined) {
               throw new Error("'wait' jobs run inline only and do not accept a 'model'.");
             }
+            if (job.type !== "wait" && params.deliverTo !== undefined) {
+              throw new Error("'deliverTo' applies to 'wait' jobs only.");
+            }
 
             // Reject empty-string model (schema also enforces minLength: 1).
             // To switch a job from subagent → inline mode, remove and re-add
@@ -337,6 +347,7 @@ export function createCronTool(
             if (params.notify !== undefined) updates.notify = params.notify;
             if (params.extensions !== undefined) updates.extensions = params.extensions;
             if (params.skills !== undefined) updates.skills = params.skills;
+            if (params.deliverTo !== undefined) updates.deliverTo = params.deliverTo;
 
             if (params.schedule) {
               // Same resolution rules as `add`: relative time (`+5m`) → ISO,
@@ -390,7 +401,7 @@ export function createCronTool(
               lines.push(`${status} ${job.name} (${job.id})`);
               lines.push(
                 job.type === "wait"
-                  ? `  Type: wait | Waits for session: ${job.session}`
+                  ? `  Type: wait | Waits for session: ${job.session} | Delivers to: ${job.deliverTo ?? "target"}`
                   : `  Type: ${job.type} | Schedule: ${displaySchedule(job)}`
               );
               if (job.model) {
@@ -485,7 +496,7 @@ export function createCronTool(
           lines.push(`${status} ${theme.fg("text", job.name)} ${theme.fg("dim", `(${job.id})`)}`);
           lines.push(
             job.type === "wait"
-              ? `  ${theme.fg("dim", "Type:")} wait ${theme.fg("dim", "| Waits for session:")} ${job.session}`
+              ? `  ${theme.fg("dim", "Type:")} wait ${theme.fg("dim", "| Waits for session:")} ${job.session} ${theme.fg("dim", "| Delivers to:")} ${job.deliverTo ?? "target"}`
               : `  ${theme.fg("dim", "Type:")} ${job.type} ${theme.fg("dim", "| Schedule:")} ${displaySchedule(job)}`
           );
           if (job.model) {

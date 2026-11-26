@@ -642,4 +642,83 @@ describe("schedule_prompt — wait jobs", () => {
     );
     expect(result.details?.error).toContain("'session' must be a non-empty string");
   });
+
+  it("add defaults a wait job to target delivery and honours an explicit owner delivery", async () => {
+    const coordinatorDir = makeCoordinatorDir([{ sessionId: "target-session", cwd: "/work" }]);
+    const { tool, storage } = buildTool([], () => "session", coordinatorDir);
+
+    const defaulted = await tool.execute(
+      "call",
+      { action: "add", type: "wait", prompt: "p", session: "target-session" } as any,
+      undefined,
+      undefined,
+      makeCtx("creator-session", "/work"),
+    );
+    expect(defaulted.details?.error).toBeUndefined();
+    expect(storage.getJob(defaulted.details?.jobs?.[0].id as string)?.deliverTo).toBe("target");
+
+    const owned = await tool.execute(
+      "call",
+      {
+        action: "add",
+        type: "wait",
+        prompt: "p",
+        session: "target-session",
+        deliverTo: "owner",
+      } as any,
+      undefined,
+      undefined,
+      makeCtx("creator-session", "/work"),
+    );
+    expect(owned.details?.error).toBeUndefined();
+    expect(storage.getJob(owned.details?.jobs?.[0].id as string)?.deliverTo).toBe("owner");
+  });
+
+  it("rejects deliverTo on a clock job", async () => {
+    const { tool } = buildTool();
+    const result = await tool.execute(
+      "call",
+      { action: "add", type: "once", schedule: "+10s", prompt: "x", deliverTo: "owner" } as any,
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    expect(result.details?.error).toContain("'deliverTo' applies to 'wait' jobs only");
+  });
+
+  it("update switches a wait job to owner delivery", async () => {
+    const job = exampleJob({
+      id: "w1",
+      type: "wait",
+      schedule: "wait",
+      session: "target-session",
+      ownerSession: "creator-session",
+      deliverTo: "target",
+    });
+    const { tool, storage } = buildTool([job]);
+    const result = await tool.execute(
+      "call",
+      { action: "update", jobId: "w1", deliverTo: "owner" } as any,
+      undefined,
+      undefined,
+      makeCtx("creator-session"),
+    );
+    expect(result.details?.error).toBeUndefined();
+    expect(storage.getJob("w1")?.deliverTo).toBe("owner");
+  });
+
+  it("update rejects deliverTo on a clock job and keeps the stored value", async () => {
+    const job = exampleJob({ id: "j1" });
+    const { tool, storage } = buildTool([job]);
+    const result = await tool.execute(
+      "call",
+      { action: "update", jobId: "j1", deliverTo: "owner" } as any,
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    expect(result.details?.error).toContain("'deliverTo' applies to 'wait' jobs only");
+    expect(storage.getJob("j1")?.deliverTo).toBeUndefined();
+  });
+
 });

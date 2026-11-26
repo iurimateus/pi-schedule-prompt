@@ -14,6 +14,7 @@ interface HarnessOptions {
   coordinatorDir?: string;
   pickType?: string;
   pickWait?: (options: string[]) => string | undefined;
+  pickDelivery?: (options: string[]) => string | undefined;
 }
 
 // Drives runAddFlow through a scripted UI: `input` and `editor` return queued
@@ -28,6 +29,7 @@ function makeHarness(inputs: (string | undefined)[], opts: HarnessOptions = {}) 
   editor.mockImplementation(async () => queue.shift());
   const select = vi.fn(async (title: string, options: string[]) => {
     if (title === "Wait for" && opts.pickWait) return opts.pickWait(options);
+    if (title === "Deliver to" && opts.pickDelivery) return opts.pickDelivery(options);
     if (title === "Job Type" && opts.pickType) return opts.pickType;
     return options[0];
   });
@@ -228,4 +230,48 @@ describe("runAddFlow wait picker", () => {
     expect(waitOptions(h.ui)).toEqual([]);
     expect(h.addJob).not.toHaveBeenCalled();
   });
+
+describe("runAddFlow wait delivery", () => {
+  function makeWaitDir(): string {
+    const dir = makeCoordinatorDir();
+    writeRecord(dir, {
+      sessionId: "target",
+      sessionFile: writeSessionFile(dir, "target", rootHeader("target")),
+      updatedAt: 100,
+    });
+    return dir;
+  }
+
+  it("defaults the delivery to the waited-on session", async () => {
+    const dir = makeWaitDir();
+    const h = makeHarness(["my wait", "the prompt"], { coordinatorDir: dir, pickType: WAIT });
+
+    await runAddFlow(h.ctx, h.storage, h.scheduler, h.settings, "current-session", dir);
+
+    const delivery = h.ui.select.mock.calls.find((c) => c[0] === "Deliver to");
+    expect(delivery).toBeDefined();
+    expect((delivery?.[1] as string[])[0]).toBe("Target session — its chat takes the prompt");
+    expect(h.addJob.mock.calls[0][0]).toMatchObject<Partial<CronJob>>({ deliverTo: "target" });
+  });
+
+  it("persists the owner delivery when chosen and shows it on the confirm", async () => {
+    const dir = makeWaitDir();
+    const h = makeHarness(["my wait", "the prompt"], {
+      coordinatorDir: dir,
+      pickType: WAIT,
+      pickDelivery: (options) => options.find((o) => o.startsWith("This session")),
+    });
+
+    await runAddFlow(h.ctx, h.storage, h.scheduler, h.settings, "current-session", dir);
+
+    expect(h.addJob.mock.calls[0][0]).toMatchObject<Partial<CronJob>>({
+      type: "wait",
+      session: "target",
+      ownerSession: "current-session",
+      deliverTo: "owner",
+    });
+    expect(h.ui.confirm.mock.calls[0][1]).toContain("Delivers to: this session");
+  });
+});
+
 });

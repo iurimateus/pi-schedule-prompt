@@ -1486,6 +1486,26 @@ describe("CronScheduler — wait jobs", () => {
     expect(CronScheduler.isLoadedFor(job, "other-session")).toBe(false);
   });
 
+  it("isLoadedFor: an owner-delivery wait job loads only for the creating session", () => {
+    const job = waitJob({ deliverTo: "owner" });
+    expect(CronScheduler.isLoadedFor(job, "owner-session")).toBe(true);
+    expect(CronScheduler.isLoadedFor(job, "target-session")).toBe(false);
+  });
+
+
+  it("owner delivery: a wait job without a target never delivers here", () => {
+    const dir = makeCoordinatorDir([
+      { sessionId: "target-session", status: "settled", pid: process.pid },
+    ]);
+    const pi = makePi();
+    const storage = makeStorage([waitJob({ deliverTo: "owner", session: undefined })]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("owner-session"), dir);
+
+    (scheduler as any).evaluateWaitJobs();
+
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+    expect(storage.getJob("wait-1").enabled).toBe(true);
+  });
   it("start() arms the wait poller and stop() clears it", () => {
     const dir = makeCoordinatorDir([]);
     const pi = makePi();
@@ -1575,4 +1595,86 @@ describe("CronScheduler — wait jobs", () => {
     expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
     consoleSpy.mockRestore();
   });
+
+  it("owner delivery: the creating session delivers when the target is settled", () => {
+    const dir = makeCoordinatorDir([
+      { sessionId: "target-session", status: "settled", pid: process.pid },
+    ]);
+    const pi = makePi();
+    const storage = makeStorage([waitJob({ deliverTo: "owner" })]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("owner-session"), dir);
+
+    (scheduler as any).evaluateWaitJobs();
+
+    const [marker, markerOpts] = pi.sendMessage.mock.calls[0];
+    expect(marker.details.mode).toBe("wait_delivery");
+    expect(marker.content).toEqual([]);
+    expect(markerOpts).toBeUndefined();
+    expect(pi.sendUserMessage).toHaveBeenCalledWith("do the thing", { deliverAs: "followUp" });
+
+    const delivered = storage.getJob("wait-1");
+    expect(delivered.enabled).toBe(false);
+    expect(delivered.lastStatus).toBe("success");
+    expect(delivered.runCount).toBe(1);
+  });
+
+  it("owner delivery: the waited-on session never delivers", () => {
+    const dir = makeCoordinatorDir([
+      { sessionId: "target-session", status: "settled", pid: process.pid },
+    ]);
+    setSubagentManager({ hasRunning: () => false });
+    const pi = makePi();
+    const storage = makeStorage([waitJob({ deliverTo: "owner" })]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("target-session"), dir);
+
+    (scheduler as any).evaluateWaitJobs();
+
+    expect(pi.sendMessage).not.toHaveBeenCalled();
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+    expect(storage.getJob("wait-1").enabled).toBe(true);
+  });
+
+  it("owner delivery: the creating session keeps waiting while the target is working", () => {
+    const dir = makeCoordinatorDir([
+      { sessionId: "target-session", status: "working", pid: process.pid },
+    ]);
+    const pi = makePi();
+    const storage = makeStorage([waitJob({ deliverTo: "owner" })]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("owner-session"), dir);
+
+    (scheduler as any).evaluateWaitJobs();
+
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+    expect(storage.getJob("wait-1").enabled).toBe(true);
+  });
+
+  it("owner delivery: the creating session delivers the exit fallback when the target exits first", () => {
+    const dir = makeCoordinatorDir([
+      { sessionId: "target-session", status: "exited", pid: process.pid },
+    ]);
+    const pi = makePi();
+    const storage = makeStorage([waitJob({ deliverTo: "owner" })]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("owner-session"), dir);
+
+    (scheduler as any).evaluateWaitJobs();
+
+    expect(pi.sendMessage.mock.calls[0][0].details.mode).toBe("wait_fallback");
+    expect(pi.sendUserMessage).toHaveBeenCalledWith("do the thing", { deliverAs: "followUp" });
+    expect(storage.getJob("wait-1").enabled).toBe(false);
+  });
+
+  it("owner delivery: a settled record with a dead pid counts as exit", () => {
+    const dir = makeCoordinatorDir([
+      { sessionId: "target-session", status: "settled", pid: 0 },
+    ]);
+    const pi = makePi();
+    const storage = makeStorage([waitJob({ deliverTo: "owner" })]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("owner-session"), dir);
+
+    (scheduler as any).evaluateWaitJobs();
+
+    expect(pi.sendMessage.mock.calls[0][0].details.mode).toBe("wait_fallback");
+    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
+  });
+
 });

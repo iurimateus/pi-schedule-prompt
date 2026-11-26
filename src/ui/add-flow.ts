@@ -18,13 +18,13 @@ import {
 import { CronScheduler } from "../scheduler.js";
 import type { ScheduleSettings } from "../settings.js";
 import type { CronStorage } from "../storage.js";
-import type { CronJob, CronJobType } from "../types.js";
+import type { CronJob, CronJobType, WaitDelivery } from "../types.js";
 import { WAIT_SCHEDULE } from "../types.js";
 
 const BACK = "Back";
 
 const CLOCK_STEPS = ["name", "type", "schedule", "prompt", "scope", "confirm"] as const;
-const WAIT_STEPS = ["name", "type", "waitTarget", "prompt", "confirm"] as const;
+const WAIT_STEPS = ["name", "type", "waitTarget", "waitDelivery", "prompt", "confirm"] as const;
 
 type AddStep = (typeof CLOCK_STEPS)[number] | (typeof WAIT_STEPS)[number];
 
@@ -32,6 +32,7 @@ interface AddDraft {
   name?: string;
   jobType?: CronJobType;
   waitTarget?: string;
+  deliverTo?: WaitDelivery;
   schedule?: string;
   intervalMs?: number;
   prompt?: string;
@@ -122,6 +123,21 @@ export async function runAddFlow(
         index += 1;
         break;
       }
+      case "waitDelivery": {
+        // Default option first: the waited-on session takes the prompt unless
+        // the user asks for owner delivery.
+        const DELIVER_TARGET = "Target session — its chat takes the prompt";
+        const DELIVER_OWNER = "This session — I take the prompt once the target is idle";
+        const choice = await ctx.ui.select("Deliver to", [DELIVER_TARGET, DELIVER_OWNER, BACK]);
+        const deliverTo = choice === BACK ? undefined : choice;
+        if (!deliverTo) {
+          if (!goBack()) return;
+          break;
+        }
+        draft.deliverTo = deliverTo === DELIVER_OWNER ? "owner" : "target";
+        index += 1;
+        break;
+      }
       case "schedule": {
         const jobType = draft.jobType!;
         // The input component ignores the placeholder, so surface the error in
@@ -187,7 +203,7 @@ export async function runAddFlow(
         const isWait = jobType === "wait";
         const schedule = isWait ? WAIT_SCHEDULE : draft.schedule!;
         const summary = isWait
-          ? `Save "${name}"?\nType: wait\nTarget: ${draft.waitTarget}\nPrompt: ${prompt}`
+          ? `Save "${name}"?\nType: wait\nTarget: ${draft.waitTarget}\nDelivers to: ${draft.deliverTo === "owner" ? "this session" : "the target session"}\nFallback: this session if the target exits first\nPrompt: ${prompt}`
           : `Save "${name}"?\nSchedule: ${CronScheduler.describeSchedule(jobType, schedule)}\nScope: ${draft.session ? "session-bound" : "shared (any pi here)"}\nPrompt: ${prompt}`;
         const confirmed = await ctx.ui.confirm("Confirm", summary);
         if (!confirmed) {
@@ -207,6 +223,7 @@ export async function runAddFlow(
           runCount: 0,
           session: isWait ? draft.waitTarget : draft.session,
           ownerSession: isWait ? mySessionId : undefined,
+          deliverTo: isWait ? draft.deliverTo : undefined,
         };
 
         storage.addJob(job);

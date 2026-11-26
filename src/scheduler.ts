@@ -132,9 +132,12 @@ export class CronScheduler {
   }
 
   /** Unbound jobs (no `session` field) load for everyone. Wait jobs also load
-   *  for their owner so it can run the exit fallback and manage the job. */
+   *  for their owner so it can run the exit fallback and manage the job. An
+   *  owner-delivery wait job exists only for the creating session: the waited-on
+   *  session never takes its prompt, so it must not list or manage it. */
   static isLoadedFor(job: CronJob, sessionId: string | undefined): boolean {
     if (job.ownerSession !== undefined && job.ownerSession === sessionId) return true;
+    if (job.type === "wait" && job.deliverTo === "owner") return false;
     return !job.session || job.session === sessionId;
   }
 
@@ -492,8 +495,10 @@ export class CronScheduler {
   /**
    * Scan shared storage for wait jobs this session can deliver. Persisted
    * storage is the rendezvous: the target process delivers once the target is
-   * settled and this process has no running pi-subagents; the owner process
-   * delivers the fallback once the target has exited.
+   * settled and this process has no running pi-subagents; a job with
+   * `deliverTo: "owner"` instead makes the creating process wait for the target
+   * and deliver into its own chat; either mode falls back to the owner once the
+   * target has exited.
    */
   private evaluateWaitJobs(): void {
     const mySessionId = this.ctx.sessionManager.getSessionId();
@@ -505,22 +510,41 @@ export class CronScheduler {
   }
 
   private evaluateWaitJob(job: CronJob, mySessionId: string | undefined): void {
-    // Target path wins when this session is both target and owner (self-wait).
-    if (job.session !== undefined && job.session === mySessionId) {
-      const record = readSessionRecord(this.coordinatorDir, job.session);
-      const settled = record?.status === "settled" && isPidAlive(record.pid);
-      if (settled && !hasRunningSubagents()) {
+    const deliversToOwner = job.deliverTo === "owner";
+
+    // Target path: the waited-on session takes the prompt itself. It wins when
+    // this session is both target and owner (self-wait). Owner delivery skips
+    // it - the prompt belongs in the creating chat, not here.
+    if (!deliversToOwner && job.session !== undefined && job.session === mySessionId) {
+      if (this.targetIdle(job.session, mySessionId)) {
         this.deliverWaitJob(job, "wait_delivery");
       }
       return;
     }
 
-    // Owner fallback: the target can no longer deliver, so take over here.
-    if (job.ownerSession !== undefined && job.ownerSession === mySessionId) {
-      if (this.targetExited(job.session)) {
-        this.deliverWaitJob(job, "wait_fallback");
-      }
+    // Owner path: the requested owner delivery, or the target-delivery exit
+    // fallback when the target can no longer take the prompt.
+    if (job.ownerSession === undefined || job.ownerSession !== mySessionId) return;
+    if (this.targetExited(job.session)) {
+      this.deliverWaitJob(job, "wait_fallback");
+      return;
     }
+    if (deliversToOwner && this.targetIdle(job.session, mySessionId)) {
+      this.deliverWaitJob(job, "wait_delivery");
+    }
+  }
+
+  /**
+   * True when the target is idle: a settled record with a live pid and, when
+   * this very process is the target, no running pi-subagents. Another process's
+   * subagent state is not observable, so a foreign target counts as idle on its
+   * settled status alone.
+   */
+  private targetIdle(target: string | undefined, mySessionId: string | undefined): boolean {
+    if (!target) return false;
+    const record = readSessionRecord(this.coordinatorDir, target);
+    if (record?.status !== "settled" || !isPidAlive(record.pid)) return false;
+    return target !== mySessionId || !hasRunningSubagents();
   }
 
   /** True only when a tracked target is marked exited or its process has died. */

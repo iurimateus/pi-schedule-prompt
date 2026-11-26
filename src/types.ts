@@ -31,6 +31,13 @@ export type CronJobType = "cron" | "once" | "interval" | "idle" | "wait";
 export const WAIT_SCHEDULE = "wait";
 
 /**
+ * Where a wait job's prompt lands once the wait completes. `"target"` (the
+ * default) delivers into the waited-on session; `"owner"` delivers into the
+ * session that created the job.
+ */
+export type WaitDelivery = "target" | "owner";
+
+/**
  * Status of the last job execution
  */
 export type CronJobStatus = "success" | "error" | "running";
@@ -80,6 +87,12 @@ export interface CronJob {
   session?: string;
   /** Wait jobs only. Session id that created the job (owner of the fallback delivery). */
   ownerSession?: string;
+  /**
+   * Wait jobs only. Where the prompt lands once the wait completes: `"target"`
+   * (the default when absent) delivers into the waited-on `session`, `"owner"`
+   * delivers into the creating `ownerSession` once the target is idle.
+   */
+  deliverTo?: WaitDelivery;
 }
 
 /**
@@ -144,6 +157,12 @@ export const CronToolParams = Type.Object({
       minLength: 1,
       description:
         "Wait jobs only. Target a tracked session in the same working directory. Defaults to the creating session.",
+    })
+  ),
+  deliverTo: Type.Optional(
+    StringEnum(["target", "owner"] as const, {
+      description:
+        "Wait jobs only. Where the prompt lands once the wait completes: 'target' (default) delivers into the waited-on session, 'owner' delivers into the creating session once the target is idle. Either mode falls back to the creating session if the target exits first.",
     })
   ),
   description: Type.Optional(
