@@ -93,6 +93,12 @@ export interface CronJob {
    * delivers into the creating `ownerSession` once the target is idle.
    */
   deliverTo?: WaitDelivery;
+  /**
+   * Wait jobs only. Session-scoped idempotency key: while an enabled wait job
+   * with the same `session` and `dedupeKey` exists, creation returns that job
+   * instead of adding another. A delivered or disabled job no longer matches.
+   */
+  dedupeKey?: string;
 }
 
 /**
@@ -163,6 +169,13 @@ export const CronToolParams = Type.Object({
     StringEnum(["target", "owner"] as const, {
       description:
         "Wait jobs only. Where the prompt lands once the wait completes: 'target' (default) delivers into the waited-on session, 'owner' delivers into the creating session once the target is idle. Either mode falls back to the creating session if the target exits first.",
+    })
+  ),
+  dedupeKey: Type.Optional(
+    Type.String({
+      minLength: 1,
+      description:
+        "Wait jobs only. Session-scoped idempotency key: an enabled wait job with the same key for the same session is reused instead of creating another. A delivered or disabled job no longer matches.",
     })
   ),
   description: Type.Optional(

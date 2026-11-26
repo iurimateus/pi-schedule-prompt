@@ -31,6 +31,19 @@ function makeStorage(seedJobs: CronJob[] = []) {
     hasJobWithName: (name: string) =>
       Array.from(jobs.values()).some((j) => j.name === name),
     addJob: (job: CronJob) => jobs.set(job.id, job),
+    addJobDeduped: (job: CronJob, dedupeKey?: string) => {
+      if (dedupeKey !== undefined) {
+        const existing = Array.from(jobs.values()).find(
+          (j) => j.enabled && j.session === job.session && j.dedupeKey === dedupeKey,
+        );
+        if (existing) return { ok: true, job: existing, added: false };
+      }
+      if (Array.from(jobs.values()).some((j) => j.name === job.name)) {
+        return { ok: false, reason: "duplicate-name" };
+      }
+      jobs.set(job.id, job);
+      return { ok: true, job, added: true };
+    },
     removeJob: (id: string) => jobs.delete(id),
     updateJob: (id: string, partial: Partial<CronJob>) => {
       const job = jobs.get(id);
@@ -777,4 +790,97 @@ describe("schedule_prompt — wait jobs", () => {
     expect(storage.getJob("j1")?.deliverTo).toBeUndefined();
   });
 
+});
+
+describe("schedule_prompt — wait deduplication", () => {
+  it("reuses an enabled self-wait job with the same dedupeKey", async () => {
+    const { tool, storage } = buildTool();
+
+    const first = await tool.execute(
+      "call",
+      { action: "add", type: "wait", prompt: "wake", dedupeKey: "k" } as any,
+      undefined,
+      undefined,
+      makeCtx("creator-session"),
+    );
+    expect(first.details?.error).toBeUndefined();
+    const firstId = first.details?.jobs?.[0].id as string;
+    expect(storage.getJob(firstId)?.dedupeKey).toBe("k");
+
+    const second = await tool.execute(
+      "call",
+      { action: "add", type: "wait", prompt: "other", dedupeKey: "k" } as any,
+      undefined,
+      undefined,
+      makeCtx("creator-session"),
+    );
+    expect(second.details?.error).toBeUndefined();
+    expect(second.details?.jobs?.[0].id).toBe(firstId);
+    expect(second.content[0].text).toContain("Reused");
+    expect(storage.getAllJobs()).toHaveLength(1);
+  });
+
+  it("dedupes a key for a wait job that targets another session", async () => {
+    const coordinatorDir = makeCoordinatorDir([{ sessionId: "target-session", cwd: "/work" }]);
+    const { tool, storage } = buildTool([], () => "session", coordinatorDir);
+
+    const params = {
+      action: "add",
+      type: "wait",
+      prompt: "wake",
+      session: "target-session",
+      dedupeKey: "k",
+    } as any;
+    const first = await tool.execute("call", params, undefined, undefined, makeCtx("creator-session", "/work"));
+    const second = await tool.execute("call", params, undefined, undefined, makeCtx("creator-session", "/work"));
+
+    expect(first.details?.error).toBeUndefined();
+    expect(second.details?.error).toBeUndefined();
+    expect(second.details?.jobs?.[0].id).toBe(first.details?.jobs?.[0].id);
+    expect(storage.getAllJobs()).toHaveLength(1);
+  });
+
+  it("rejects dedupeKey on a clock job", async () => {
+    const { tool } = buildTool();
+    const result = await tool.execute(
+      "call",
+      { action: "add", type: "once", schedule: "+10s", prompt: "x", dedupeKey: "k" } as any,
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    expect(result.details?.error).toContain("'dedupeKey' applies to 'wait' jobs only");
+  });
+
+  it("rejects an empty dedupeKey on a wait job", async () => {
+    const { tool } = buildTool();
+    const result = await tool.execute(
+      "call",
+      { action: "add", type: "wait", prompt: "x", dedupeKey: "" } as any,
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    expect(result.details?.error).toContain("'dedupeKey' must be a non-empty string");
+  });
+
+  it("rejects dedupeKey on update because it is fixed at creation", async () => {
+    const job = exampleJob({
+      id: "w1",
+      type: "wait",
+      schedule: "wait",
+      session: "test-session",
+      ownerSession: "test-session",
+    });
+    const { tool, storage } = buildTool([job]);
+    const result = await tool.execute(
+      "call",
+      { action: "update", jobId: "w1", dedupeKey: "k" } as any,
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    expect(result.details?.error).toContain("fixed at creation");
+    expect(storage.getJob("w1")?.dedupeKey).toBeUndefined();
+  });
 });

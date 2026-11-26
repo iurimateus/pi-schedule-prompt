@@ -6,10 +6,11 @@ import {
   DEFAULT_COORDINATOR_DIR,
 } from "./coordinator.js";
 import { CronScheduler, displaySchedule, formatLocal } from "./scheduler.js";
+import { scheduleSelfWait } from "./self-wait.js";
 import type { JobScope } from "./settings.js";
 import type { CronStorage } from "./storage.js";
 import type { CronJob, CronJobType, CronToolDetails } from "./types.js";
-import { CronToolParams, WAIT_SCHEDULE } from "./types.js";
+import { CronToolParams } from "./types.js";
 
 interface WaitTargetResult {
   ok: boolean;
@@ -110,8 +111,9 @@ export function createCronTool(
             // Generate name if not provided
             const jobName = params.name || `job-${nanoid(6)}`;
 
-            // Check for duplicate names
-            if (storage.hasJobWithName(jobName)) {
+            // Check for duplicate names. Wait jobs defer this check to the
+            // shared creation path, which looks for a dedupe hit first.
+            if (!isWait && storage.hasJobWithName(jobName)) {
               throw new Error(
                 `A job named "${jobName}" already exists. Please use a different name or remove the existing job first.`
               );
@@ -129,6 +131,15 @@ export function createCronTool(
               throw new Error("'deliverTo' applies to 'wait' jobs only.");
             }
 
+            // `dedupeKey` gives wait creation a session-scoped identity; clock
+            // jobs have no wait identity to deduplicate.
+            if (!isWait && params.dedupeKey !== undefined) {
+              throw new Error("'dedupeKey' applies to 'wait' jobs only.");
+            }
+            if (isWait && params.dedupeKey !== undefined && params.dedupeKey.length === 0) {
+              throw new Error("'dedupeKey' must be a non-empty string.");
+            }
+
             // Defense-in-depth - the schema enforces minLength: 1, but direct
             // callers can bypass the schema.
             if (isWait && params.session !== undefined && params.session.length === 0) {
@@ -137,49 +148,56 @@ export function createCronTool(
 
             const mySessionId = ctx.sessionManager.getSessionId();
 
-            // Wait jobs have no clock time: `schedule` is a sentinel and an
-            // explicit target must be a tracked, active session.
-            let schedule: string;
-            let intervalMs: number | undefined;
-            let session: string | undefined;
+            let job: CronJob;
+            let reused = false;
             if (isWait) {
+              // Wait jobs have no clock time: `schedule` is a sentinel and an
+              // explicit target must be a tracked, active session. The shared
+              // creation path persists with the optional dedupeKey and arms the
+              // job only when it created a new one.
               if (params.session !== undefined) {
                 const target = validateWaitTarget(params.session, coordinatorDir);
                 if (!target.ok) throw new Error(target.error);
               }
-              schedule = WAIT_SCHEDULE;
-              session = params.session ?? mySessionId;
+              const created = scheduleSelfWait(
+                { storage, scheduler, sessionId: mySessionId },
+                {
+                  prompt: params.prompt,
+                  targetSession: params.session ?? mySessionId,
+                  dedupeKey: params.dedupeKey,
+                  name: jobName,
+                  description: params.description,
+                  deliverTo: params.deliverTo,
+                },
+              );
+              if (!created.ok) throw new Error(created.error);
+              job = created.job;
+              reused = !created.created;
             } else {
               const validated = CronScheduler.validateSchedule(type, params.schedule as string);
               if (!validated.ok) throw new Error(validated.error);
-              schedule = validated.schedule;
-              intervalMs = validated.intervalMs;
-              session = getDefaultScope() === "session" ? mySessionId : undefined;
+              job = {
+                id: nanoid(10),
+                name: jobName,
+                schedule: validated.schedule,
+                prompt: params.prompt,
+                enabled: true,
+                type,
+                intervalMs: validated.intervalMs,
+                createdAt: new Date().toISOString(),
+                runCount: 0,
+                description: params.description,
+                model: params.model,
+                notify: params.notify,
+                extensions: params.extensions,
+                skills: params.skills,
+                session: getDefaultScope() === "session" ? mySessionId : undefined,
+                ownerSession: undefined,
+                deliverTo: undefined,
+              };
+              storage.addJob(job);
+              scheduler.addJob(job);
             }
-
-            const now = new Date().toISOString();
-            const job: CronJob = {
-              id: nanoid(10),
-              name: jobName,
-              schedule,
-              prompt: params.prompt,
-              enabled: true,
-              type,
-              intervalMs,
-              createdAt: now,
-              runCount: 0,
-              description: params.description,
-              model: params.model,
-              notify: params.notify,
-              extensions: params.extensions,
-              skills: params.skills,
-              session,
-              ownerSession: isWait ? mySessionId : undefined,
-              deliverTo: isWait ? (params.deliverTo ?? "target") : undefined,
-            };
-
-            storage.addJob(job);
-            scheduler.addJob(job);
             details.jobs = [job];
             details.jobId = job.id;
             details.jobName = job.name;
@@ -190,11 +208,18 @@ export function createCronTool(
             const waitLine = isWait
               ? `\nWaits for session: ${job.session}\nDelivers to: ${job.deliverTo === "owner" ? "this session (once the target is idle)" : "the waited-on session"}\nFallback: this session if the target exits first`
               : `\nSchedule: ${displaySchedule(job)}`;
+            const dedupeLine =
+              isWait && job.dedupeKey
+                ? `\nDedupe key: ${job.dedupeKey} (session-scoped)`
+                : "";
+            const reuseLine = reused
+              ? "\nReused the existing wait job; no new job was created"
+              : "";
             return {
               content: [
                 {
                   type: "text",
-                  text: `✓ Created cron job "${job.name}" (${job.id})\nType: ${job.type}${waitLine}\nPrompt: ${job.prompt}${modelLine}`,
+                  text: `${reused ? "✓ Reused existing wait job" : "✓ Created cron job"} "${job.name}" (${job.id})\nType: ${job.type}${waitLine}${dedupeLine}${reuseLine}\nPrompt: ${job.prompt}${modelLine}`,
                 },
               ],
               details,
@@ -320,6 +345,14 @@ export function createCronTool(
             }
             if (job.type !== "wait" && params.deliverTo !== undefined) {
               throw new Error("'deliverTo' applies to 'wait' jobs only.");
+            }
+
+            // `dedupeKey` is fixed at creation: changing it after the fact
+            // would silently change which job a later request reuses.
+            if (params.dedupeKey !== undefined) {
+              throw new Error(
+                "'dedupeKey' is fixed at creation; it applies to 'wait' jobs created by add."
+              );
             }
 
             // Reject empty-string model (schema also enforces minLength: 1).

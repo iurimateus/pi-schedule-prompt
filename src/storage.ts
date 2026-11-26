@@ -27,6 +27,11 @@ export function projectKey(cwd: string): string {
 /** Outcome of a legacy-store migration attempt, for the caller to report. */
 export type LegacyMigration = "none" | "migrated" | "untrusted" | "failed";
 
+/** Result of `CronStorage.addJobDeduped`. */
+export type AddJobDedupedResult =
+  | { ok: true; job: CronJob; added: boolean }
+  | { ok: false; reason: "duplicate-name" };
+
 /**
  * Persists scheduled prompts as per-project runtime state in the pi agent dir:
  * `<agentDir>/schedule-prompts/projects/<sha256(realpath(cwd))>.json`.
@@ -145,6 +150,35 @@ export class CronStorage {
     const store = this.load();
     store.jobs.push(job);
     this.save(store);
+  }
+
+  /**
+   * Add `job` unless an enabled wait job with the same session and
+   * `dedupeKey` already exists. Returns the existing job with `added: false`.
+   *
+   * The lookup, duplicate-name check, and append share one synchronous
+   * load/save, so concurrent callers in this process cannot both create the
+   * job. This is not an interprocess lock: two processes can both pass the
+   * lookup before either saves. The store's atomic rename keeps the file whole,
+   * but cross-process dedupe remains best-effort.
+   */
+  addJobDeduped(job: CronJob, dedupeKey?: string): AddJobDedupedResult {
+    const store = this.load();
+
+    if (dedupeKey !== undefined) {
+      const existing = store.jobs.find(
+        (j) => j.enabled && j.session === job.session && j.dedupeKey === dedupeKey,
+      );
+      if (existing) return { ok: true, job: existing, added: false };
+    }
+
+    if (store.jobs.some((j) => j.name === job.name)) {
+      return { ok: false, reason: "duplicate-name" };
+    }
+
+    store.jobs.push(job);
+    this.save(store);
+    return { ok: true, job, added: true };
   }
 
   /**

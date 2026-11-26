@@ -147,7 +147,8 @@ Collapsing with `/schedule-prompt hide` (or `show` / `toggle`) reduces it to a s
 | `schedule` | string | on `add` | Cron expression, ISO timestamp, relative time (`+10s`, `+5m`), interval (`5m`), or idle duration (`10m`) |
 | `prompt` | string | on `add` | Prompt text to execute when the job fires |
 | `jobId` | string | on `remove` / `enable` / `disable` / `update` | Target job |
-| `type` | `cron` \| `once` \| `interval` \| `idle` | no | Job type. Default `cron`; use `once` for relative times like `+10s`, `idle` to fire after inactivity |
+| `type` | `cron` \| `once` \| `interval` \| `idle` \| `wait` | no | Job type. Default `cron`; use `once` for relative times like `+10s`, `idle` to fire after inactivity, or `wait` for inline delivery once a session is idle (no schedule needed) |
+| `dedupeKey` | non-empty string | no | Wait jobs only. Session-scoped idempotency key: an enabled wait job with the same key for the same session is reused instead of creating another. A delivered or disabled job no longer matches |
 | `description` | string | no | Free-form note |
 | `model` | non-empty string | no | If set, run the prompt in a fresh in-process agent session with this model instead of injecting into the current chat. Accepts fuzzy names (`haiku`, `sonnet`) or `provider/model-id`. To switch a job from subagent back to inline mode, remove and re-add it without `model` (no in-place clearing) |
 | `notify` | boolean | no | Subagent-only. If `true`, the parent agent is woken to react to the subagent's result. Default `false` (result shown in chat, parent not interrupted). No-op for inline (no-model) jobs — the prompt itself already wakes the parent. Recommended only for low-frequency jobs |
@@ -330,6 +331,7 @@ src/
   settings.ts       # Settings persistence (global + project, project overrides)
   scheduler.ts      # Core scheduling engine with croner
   subagent.ts       # Lightweight in-process agent runner (per-task model)
+  self-wait.ts      # Self-wait creation path (tool + extension API)
   tool.ts           # schedule_prompt tool definition
   ui/
     cron-widget.ts  # Live status widget below editor
