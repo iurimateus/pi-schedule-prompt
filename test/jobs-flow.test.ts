@@ -18,7 +18,13 @@ const job: CronJob = {
 };
 const otherJob: CronJob = { ...job, id: "job-2", name: "other-report", session: "session-b" };
 
-function makeHarness(choices: (string | undefined)[], confirmations: boolean[] = [true], jobs = [job], inputs: (string | undefined)[] = []) {
+function makeHarness(
+  choices: (string | undefined)[],
+  confirmations: boolean[] = [true],
+  jobs = [job],
+  inputs: (string | undefined)[] = [],
+  nextRun: Date | null = null,
+) {
   jobs = jobs.map((item) => ({ ...item }));
   const queue = [...choices];
   const confirmationQueue = [...confirmations];
@@ -43,11 +49,18 @@ function makeHarness(choices: (string | undefined)[], confirmations: boolean[] =
       if (index !== -1) jobs.splice(index, 1);
     }),
   } as unknown as CronStorage;
-  const scheduler = { updateJob: vi.fn(), removeJob: vi.fn() } as unknown as CronScheduler;
+  const scheduler = {
+    updateJob: vi.fn(),
+    removeJob: vi.fn(),
+    getNextRun: vi.fn((): Date | null => nextRun),
+  } as unknown as CronScheduler;
   return { ctx: { ui } as unknown as ExtensionCommandContext, ui, storage, scheduler, jobs };
 }
 
-const entry = "daily-report — enabled · session-only";
+const entry = "daily-report — 0 0 9 * * * · enabled · session-only";
+const disabledEntry = "daily-report — 0 0 9 * * * · disabled · session-only";
+const sharedEntry = "daily-report — 0 0 9 * * * · enabled · shared";
+const foreignEntry = "other-report — 0 0 9 * * * · enabled · other session (read-only)";
 const quit = "Quit";
 const back = "Back";
 
@@ -73,7 +86,7 @@ describe("runJobsFlow", () => {
 
   it("enables a disabled job", async () => {
     const disabled = { ...job, enabled: false };
-    const h = makeHarness(["daily-report — disabled · session-only", "Enable job", quit], [true], [disabled]);
+    const h = makeHarness([disabledEntry, "Enable job", quit], [true], [disabled]);
     await runJobsFlow(h.ctx, h.storage, h.scheduler, "session-a", vi.fn());
     expect(h.storage.updateJob).toHaveBeenCalledWith(job.id, { enabled: true });
   });
@@ -85,7 +98,7 @@ describe("runJobsFlow", () => {
     expect(h.scheduler.updateJob).toHaveBeenCalledWith(job.id, { ...job, session: undefined });
 
     const shared = { ...job, session: undefined };
-    const second = makeHarness(["daily-report — enabled · shared", "Make session-only", quit], [true], [shared]);
+    const second = makeHarness([sharedEntry, "Make session-only", quit], [true], [shared]);
     await runJobsFlow(second.ctx, second.storage, second.scheduler, "session-a", vi.fn());
     expect(second.storage.updateJob).toHaveBeenCalledWith(job.id, { session: "session-a" });
   });
@@ -135,7 +148,7 @@ describe("runJobsFlow", () => {
   });
 
   it("shows foreign-session jobs read-only without offering mutations", async () => {
-    const foreignLabel = "other-report — enabled · other session (read-only)";
+    const foreignLabel = foreignEntry;
     const h = makeHarness([foreignLabel, back, quit], [true], [job, otherJob]);
     await runJobsFlow(h.ctx, h.storage, h.scheduler, "session-a", vi.fn());
     expect(h.ui.select).toHaveBeenNthCalledWith(1, "Jobs", ["Add job", entry, foreignLabel, "Clean up disabled jobs (0)", quit]);
@@ -144,5 +157,20 @@ describe("runJobsFlow", () => {
     expect(h.storage.removeJob).not.toHaveBeenCalled();
     expect(h.scheduler.updateJob).not.toHaveBeenCalled();
     expect(h.scheduler.removeJob).not.toHaveBeenCalled();
+  });
+
+  it("shows the schedule with the next and last run in local time", async () => {
+    const nextRun = new Date(2026, 0, 2, 9, 0);
+    const lastRun = new Date(2026, 0, 1, 9, 0).toISOString();
+    const h = makeHarness([quit], [true], [{ ...job, lastRun }], [], nextRun);
+
+    await runJobsFlow(h.ctx, h.storage, h.scheduler, "session-a", vi.fn());
+
+    expect(h.ui.select).toHaveBeenNthCalledWith(1, "Jobs", [
+      "Add job",
+      "daily-report — 0 0 9 * * * · next Jan 2 09:00 · last Jan 1 09:00 · enabled · session-only",
+      "Clean up disabled jobs (0)",
+      quit,
+    ]);
   });
 });

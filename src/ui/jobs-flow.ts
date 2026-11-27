@@ -1,5 +1,5 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { CronScheduler } from "../scheduler.js";
+import { CronScheduler, displaySchedule, formatISOShort } from "../scheduler.js";
 import type { CronStorage } from "../storage.js";
 import type { CronJob } from "../types.js";
 
@@ -22,7 +22,7 @@ export async function runJobsFlow(
     const labels = new Map<string, CronJob>();
     for (const job of [...mine, ...foreign]) {
       const isForeign = foreign.includes(job);
-      const label = `${job.name} — ${job.enabled ? "enabled" : "disabled"} · ${isForeign ? "other session (read-only)" : job.session ? "session-only" : "shared"}`;
+      const label = jobLabel(job, isForeign, scheduler);
       labels.set(label, job);
     }
     const cleanupLabel = `${CLEANUP} (${mine.filter((job) => !job.enabled).length})`;
@@ -96,4 +96,16 @@ export async function runJobsFlow(
       }
     }
   }
+}
+
+/** Selector label: name, schedule, next and last run when known, then state
+ *  and scope. Times render in local time; a cron expression stays as written
+ *  so the user recognizes what they scheduled. */
+function jobLabel(job: CronJob, isForeign: boolean, scheduler: CronScheduler): string {
+  const parts = [displaySchedule(job)];
+  const next = scheduler.getNextRun(job.id);
+  if (next) parts.push(`next ${formatISOShort(next)}`);
+  if (job.lastRun) parts.push(`last ${formatISOShort(job.lastRun)}`);
+  const scope = isForeign ? "other session (read-only)" : job.session ? "session-only" : "shared";
+  return `${job.name} — ${parts.join(" · ")} · ${job.enabled ? "enabled" : "disabled"} · ${scope}`;
 }
