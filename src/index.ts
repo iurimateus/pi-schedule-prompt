@@ -269,8 +269,8 @@ export default async function (pi: ExtensionAPI) {
     scheduler?.onPromptStart(event.kind);
   });
 
-  pi.on("ui_prompt_end", async () => {
-    scheduler?.onPromptEnd();
+  pi.on("ui_prompt_end", async (event) => {
+    scheduler?.onPromptEnd(event.kind);
   });
 
   // --- Register /schedule-prompt command ---

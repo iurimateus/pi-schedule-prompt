@@ -31,6 +31,7 @@ const USER_TURN_START_WINDOW_MS = 5_000;
  *  job with a shorter interval still waits this long: the user just finished
  *  typing into the wizard, so firing at once would interrupt them. */
 export const FLOW_IDLE_GRACE_MS = 60_000;
+const WAIT_SELF_GRACE_MS = 30_000;
 
 /** How often a process scans shared storage for wait jobs it can deliver. */
 const WAIT_POLL_INTERVAL_MS = 1000;
@@ -96,6 +97,8 @@ export class CronScheduler {
    *  when the last self-paused flow ends, cleared by real user activity, so
    *  ordinary dialogs outside a flow never see it. */
   private flowGraceUntil = 0;
+  /** Local wait targets defer self-delivery briefly after a local dialog or flow closes. */
+  private waitSelfGraceUntil = 0;
   /** Idle jobs that already fired in the current idle stretch. Cleared only by
    *  user input, so a job's own turn (or another job's) can't re-arm it. */
   private firedThisStretch = new Set<string>();
@@ -259,7 +262,10 @@ export class CronScheduler {
    */
   onSettled(aborted = false): void {
     this.busy = false;
-    if (this.userRun || aborted) this.lastUserActivity = Date.now();
+    if (this.userRun || aborted) {
+      this.lastUserActivity = Date.now();
+      this.waitSelfGraceUntil = 0;
+    }
     this.userRun = false;
     this.rearmIdleJobs();
   }
@@ -289,6 +295,7 @@ export class CronScheduler {
   onUserActivity(): void {
     this.firedThisStretch.clear();
     this.flowGraceUntil = 0;
+    this.waitSelfGraceUntil = 0;
     this.restartIdleClock();
   }
 
@@ -325,7 +332,10 @@ export class CronScheduler {
   resumeAfterDialog(): void {
     if (this.flowDepth === 0) return;
     this.flowDepth--;
-    if (this.flowDepth === 0) this.flowGraceUntil = Date.now() + FLOW_IDLE_GRACE_MS;
+    if (this.flowDepth === 0) {
+      this.flowGraceUntil = Date.now() + FLOW_IDLE_GRACE_MS;
+      this.waitSelfGraceUntil = Date.now() + WAIT_SELF_GRACE_MS;
+    }
     this.releasePause();
   }
 
@@ -339,8 +349,12 @@ export class CronScheduler {
   /** The dialog pi reported closed. Restarts the clock but does not start a new
    *  stretch: pi can't tell an answer from a timeout or abort, and a dialog
    *  opened by an idle job's own turn must not let that job fire again. */
-  onPromptEnd(): void {
-    if (this.dialogDepth > 0) this.dialogDepth--;
+  onPromptEnd(kind?: UIPromptKind): void {
+    if (kind === "custom") return;
+    if (this.dialogDepth > 0) {
+      this.dialogDepth--;
+      this.waitSelfGraceUntil = Date.now() + WAIT_SELF_GRACE_MS;
+    }
     this.releasePause();
   }
 
@@ -561,7 +575,11 @@ export class CronScheduler {
     // this session is both target and owner (self-wait). Owner delivery skips
     // it - the prompt belongs in the creating chat, not here.
     if (!deliversToOwner && job.session !== undefined && job.session === mySessionId) {
-      if (this.targetIdle(job.session, mySessionId)) {
+      const selfWait = job.ownerSession === mySessionId;
+      if (
+        (!selfWait || (!this.paused && (this.waitSelfGraceUntil === 0 || Date.now() >= this.waitSelfGraceUntil))) &&
+        this.targetIdle(job.session, mySessionId)
+      ) {
         this.deliverWaitJob(job, "wait_delivery");
       }
       return;
@@ -571,10 +589,15 @@ export class CronScheduler {
     // fallback when the target can no longer take the prompt.
     if (job.ownerSession === undefined || job.ownerSession !== mySessionId) return;
     if (this.targetExited(job.session)) {
+      if (job.session === mySessionId && (this.paused || Date.now() < this.waitSelfGraceUntil)) return;
       this.deliverWaitJob(job, "wait_fallback");
       return;
     }
-    if (deliversToOwner && this.targetIdle(job.session, mySessionId)) {
+    if (
+      deliversToOwner &&
+      (job.session !== mySessionId || (!this.paused && (this.waitSelfGraceUntil === 0 || Date.now() >= this.waitSelfGraceUntil))) &&
+      this.targetIdle(job.session, mySessionId)
+    ) {
       this.deliverWaitJob(job, "wait_delivery");
     }
   }
