@@ -1,6 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The extension registers `schedule_prompt` once and leaves it active in every
+// The extension registers the tool only when explicitly enabled at process startup.
+beforeEach(() => vi.stubEnv("PI_SCHEDULE_PROMPT_TOOL", "1"));
+afterEach(() => vi.unstubAllEnvs());
+
+// When enabled, the extension leaves the tool active in every session. Toggling
+// the active tool set on demand would change the prompt prefix and bust the provider cache.
 // session. Toggling the active tool set on demand would change the prompt
 // prefix and bust the provider cache, so these tests pin that invariant.
 
@@ -95,7 +100,7 @@ function makeCtx(): any {
 const OTHER_TOOLS = ["bash", "read", "edit"];
 const ACTIVE = [...OTHER_TOOLS, "schedule_prompt"];
 
-describe("schedule_prompt — always active", () => {
+describe("schedule_prompt — startup opt-in", () => {
   it("registers the tool at load and keeps it in the active set", async () => {
     const h = makeHarness(ACTIVE);
     await extension(h.pi as any);

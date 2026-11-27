@@ -18,7 +18,7 @@ Schedule future prompts with natural language:
 
 ### Core `schedule_prompt` Tool
 
-- **Always available**: the tool stays in the active tool set in every session, so the prompt prefix stays stable. Activation on demand would bust the provider cache
+- **Opt-in tool**: set `PI_SCHEDULE_PROMPT_TOOL=1` before starting Pi to register `schedule_prompt`. It is unregistered by default.
 - **Natural language scheduling**: "schedule X in 5 minutes", "every hour do Y"
 - **Multiple formats**: Cron expressions, intervals, ISO timestamps, relative time (+5m, +1h)
 - **Job types**:
@@ -99,9 +99,9 @@ Then run `pi` normally; the extension auto-discovers.
 
 ## Usage
 
-### Always available
+### Optional tool
 
-`schedule_prompt` stays in the active tool set in every session. The extension does not toggle it on demand, because a change to the active tool set changes the prompt prefix and busts the provider cache.
+Set `PI_SCHEDULE_PROMPT_TOOL=1` in the environment before starting Pi to register `schedule_prompt`. The tool remains unregistered by default. The extension does not change the active tool set during a session.
 
 ### LLM-driven
 

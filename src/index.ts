@@ -130,15 +130,15 @@ export default async function (pi: ExtensionAPI) {
     return new Text(line, 0, 0);
   });
 
-  // Registered once and left active in every session: toggling the active tool
-  // set would change the prompt prefix and bust the provider cache.
-  const tool = createCronTool(
-    () => storage,
-    () => scheduler,
-    () => settings.defaultJobScope ?? "session",
-  );
-  pi.registerTool(tool);
-
+  // Opt in at process startup. Never change the active tool set during a session.
+  if (process.env.PI_SCHEDULE_PROMPT_TOOL === "1") {
+    const tool = createCronTool(
+      () => storage,
+      () => scheduler,
+      () => settings.defaultJobScope ?? "session",
+    );
+    pi.registerTool(tool);
+  }
   // Other extensions discover this handle through `pi.events`; see src/api.ts.
   registerSchedulePromptApi(pi, {
     current: () =>
