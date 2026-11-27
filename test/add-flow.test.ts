@@ -13,6 +13,8 @@ interface HarnessOptions {
   cwd?: string;
   coordinatorDir?: string;
   pickType?: string;
+  selectionQueue?: (string | undefined)[];
+
   pickWait?: (options: string[]) => string | undefined;
   pickDelivery?: (options: string[]) => string | undefined;
 }
@@ -23,25 +25,49 @@ interface HarnessOptions {
 // no disk.
 function makeHarness(inputs: (string | undefined)[], opts: HarnessOptions = {}) {
   const queue = [...inputs];
+  const events: string[] = [];
   const input = vi.fn();
-  input.mockImplementation(async () => queue.shift());
+  input.mockImplementation(async () => {
+    const reply = queue.shift();
+    events.push("dialog closed");
+    return reply;
+  });
   const editor = vi.fn();
   editor.mockImplementation(async () => queue.shift());
   const select = vi.fn(async (title: string, options: string[]) => {
-    if (title === "Wait for" && opts.pickWait) return opts.pickWait(options);
-    if (title === "Deliver to" && opts.pickDelivery) return opts.pickDelivery(options);
-    if (title === "Job Type" && opts.pickType) return opts.pickType;
-    return options[0];
+    const choice = opts.selectionQueue
+      ? opts.selectionQueue.shift()
+      : (title === "Wait for" && opts.pickWait?.(options)) ||
+        (title === "Deliver to" && opts.pickDelivery?.(options)) ||
+        (title === "Job Type" && opts.pickType) ||
+        options.find((option) => option !== "Back" && option !== ENTER_SESSION_ID);
+    events.push("dialog closed");
+    return choice;
   });
-  const ui = { input, editor, select, confirm: vi.fn(async () => true), notify: vi.fn() };
+  const confirm = vi.fn(async () => {
+    events.push("dialog closed");
+    return true;
+  });
+  const ui = { input, editor, select, confirm, notify: vi.fn() };
 
   const addJob = vi.fn();
   const storage = { hasJobWithName: () => false, addJob } as unknown as CronStorage;
-  const scheduler = { addJob: vi.fn() } as unknown as CronScheduler;
+  const onFlowStep = vi.fn(() => events.push("step"));
+  const scheduler = { addJob: vi.fn(), onFlowStep } as unknown as CronScheduler;
   const settings: ScheduleSettings = { defaultJobScope: "session" };
 
   const ctx = { ui, cwd: opts.cwd ?? "/work" } as unknown as ExtensionCommandContext;
-  return { ctx, ui, storage, scheduler, settings, addJob, coordinatorDir: opts.coordinatorDir };
+  return {
+    ctx,
+    ui,
+    storage,
+    scheduler,
+    settings,
+    addJob,
+    onFlowStep,
+    events,
+    coordinatorDir: opts.coordinatorDir,
+  };
 }
 
 describe("runAddFlow schedule step", () => {
@@ -71,6 +97,53 @@ describe("runAddFlow schedule step", () => {
       type: "cron",
     });
     expect(h.scheduler.addJob).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports every step so the idle clock restarts between dialogs", async () => {
+    const h = makeHarness(["my job", "0 0 9 * * *", "the prompt"], {
+      pickType: "Cron (recurring)",
+    });
+    await runAddFlow(h.ctx, h.storage, h.scheduler, h.settings, undefined);
+
+    // name, type, schedule, prompt, scope, confirm
+    expect(h.onFlowStep).toHaveBeenCalledTimes(6);
+  });
+
+  it("resets the idle clock only after the dialog closes", async () => {
+    const h = makeHarness(["my job", "0 0 9 * * *", "the prompt"], {
+      pickType: "Cron (recurring)",
+    });
+    await runAddFlow(h.ctx, h.storage, h.scheduler, h.settings, undefined);
+
+    // A step opens its dialog first and resets the clock once the answer lands.
+    expect(h.events[0]).toBe("dialog closed");
+    expect(h.events[1]).toBe("step");
+  });
+
+  it("resets the idle clock after a cancelled step and then stops", async () => {
+    const h = makeHarness(["my job", undefined], { selectionQueue: ["Cron (recurring)", "Back"] }); // schedule cancellation returns to type; Back exits
+    await runAddFlow(h.ctx, h.storage, h.scheduler, h.settings, undefined);
+
+    // name, type, cancelled schedule, Back to name, cancelled name.
+    expect(h.events).toEqual([
+      "dialog closed", "step",
+      "dialog closed", "step",
+      "dialog closed", "step",
+      "dialog closed", "step",
+      "dialog closed", "step",
+    ]);
+    expect(h.addJob).not.toHaveBeenCalled();
+  });
+
+  it("resets the idle clock when a dialog closes with an error", async () => {
+    const h = makeHarness(["my job"]);
+    h.ui.input.mockRejectedValueOnce(new Error("dialog closed abnormally"));
+
+    await expect(runAddFlow(h.ctx, h.storage, h.scheduler, h.settings, undefined)).rejects.toThrow(
+      "dialog closed abnormally",
+    );
+    expect(h.onFlowStep).toHaveBeenCalledTimes(1);
+    expect(h.addJob).not.toHaveBeenCalled();
   });
 });
 

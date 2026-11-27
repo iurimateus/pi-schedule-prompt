@@ -55,6 +55,19 @@ export async function runAddFlow(
   mySessionId: string | undefined,
   coordinatorDir: string = DEFAULT_COORDINATOR_DIR,
 ): Promise<void> {
+  // One wizard step is one dialog. A step restarts the idle clock when its
+  // dialog closes (see `CronScheduler.onFlowStep`), so the grace after the
+  // wizard ends counts from the last answer, not from when the wizard opened.
+  // Resetting in a `finally` covers a cancelled step (no answer) and a dialog
+  // that closes with an error.
+  const step = async <T>(dialog: Promise<T>): Promise<T> => {
+    try {
+      return await dialog;
+    } finally {
+      scheduler.onFlowStep();
+    }
+  };
+
   const WAIT_OPTION = "Wait (session idle)";
   const typeMap: Record<string, CronJobType> = {
     "Cron (recurring)": "cron",
@@ -84,7 +97,7 @@ export async function runAddFlow(
   while (true) {
     switch (steps[index]) {
       case "name": {
-        const name = await ctx.ui.input("Job Name", "Enter a name for this scheduled prompt");
+        const name = await step(ctx.ui.input("Job Name", "Enter a name for this scheduled prompt"));
         if (!name) {
           if (!goBack()) return;
           break;
@@ -98,7 +111,7 @@ export async function runAddFlow(
         break;
       }
       case "type": {
-        const typeChoice = await ctx.ui.select("Job Type", [...Object.keys(typeMap), BACK]);
+        const typeChoice = await step(ctx.ui.select("Job Type", [...Object.keys(typeMap), BACK]));
         const jobType = typeChoice ? typeMap[typeChoice] : undefined;
         if (!jobType) {
           if (!goBack()) return;
@@ -110,7 +123,7 @@ export async function runAddFlow(
         break;
       }
       case "waitTarget": {
-        const target = await pickWaitTarget(ctx, coordinatorDir, ctx.cwd, mySessionId);
+        const target = await pickWaitTarget(ctx, coordinatorDir, ctx.cwd, mySessionId, step);
         if (target === BACK) {
           if (!goBack()) return;
           break;
@@ -124,7 +137,7 @@ export async function runAddFlow(
         // the user asks for owner delivery.
         const DELIVER_TARGET = "Target session — its chat takes the prompt";
         const DELIVER_OWNER = "This session — I take the prompt once the target is idle";
-        const choice = await ctx.ui.select("Deliver to", [DELIVER_TARGET, DELIVER_OWNER, BACK]);
+        const choice = await step(ctx.ui.select("Deliver to", [DELIVER_TARGET, DELIVER_OWNER, BACK]));
         const deliverTo = choice === BACK ? undefined : choice;
         if (!deliverTo) {
           if (!goBack()) return;
@@ -139,7 +152,7 @@ export async function runAddFlow(
         // The input component ignores the placeholder, so surface the error in
         // the title - where the dialog always renders it - to keep it visible.
         const title = scheduleError ? `Schedule — ${scheduleError}` : "Schedule";
-        const raw = await ctx.ui.input(title, placeholders[jobType]);
+        const raw = await step(ctx.ui.input(title, placeholders[jobType]));
         if (!raw) {
           scheduleError = undefined;
           if (!goBack()) return;
@@ -159,7 +172,7 @@ export async function runAddFlow(
       case "prompt": {
         // The multi-line editor adds a newline for Ctrl+J and Shift+Enter;
         // `input` is single-line and treats Ctrl+J as submit.
-        const prompt = await ctx.ui.editor("Prompt");
+        const prompt = await step(ctx.ui.editor("Prompt"));
         if (!prompt) {
           if (!goBack()) return;
           break;
@@ -175,12 +188,12 @@ export async function runAddFlow(
         const defaultIsSession = (settings.defaultJobScope ?? "session") === "session";
         const SCOPE_SESSION = "Bind to this session — only this pi fires it";
         const SCOPE_SHARED = "Shared — every pi in this cwd fires it (accepts duplicate fires)";
-        const scopeChoice = await ctx.ui.select(
+        const scopeChoice = await step(ctx.ui.select(
           "Scope",
           defaultIsSession
             ? [SCOPE_SESSION, SCOPE_SHARED, BACK]
             : [SCOPE_SHARED, SCOPE_SESSION, BACK],
-        );
+        ));
         const scope = scopeChoice === BACK ? undefined : scopeChoice;
         if (!scope) {
           if (!goBack()) return;
@@ -201,7 +214,7 @@ export async function runAddFlow(
         const summary = isWait
           ? `Save "${name}"?\nType: wait\nTarget: ${draft.waitTarget}\nDelivers to: ${draft.deliverTo === "owner" ? "this session" : "the target session"}\nFallback: this session if the target exits first\nPrompt: ${prompt}`
           : `Save "${name}"?\nSchedule: ${CronScheduler.describeSchedule(jobType, schedule)}\nScope: ${draft.session ? "session-bound" : "shared (any pi here)"}\nPrompt: ${prompt}`;
-        const confirmed = await ctx.ui.confirm("Confirm", summary);
+        const confirmed = await step(ctx.ui.confirm("Confirm", summary));
         if (!confirmed) {
           if (!goBack()) return;
           break;
@@ -256,6 +269,7 @@ async function pickWaitTarget(
   coordinatorDir: string,
   cwd: string,
   mySessionId: string | undefined,
+  step: <T>(dialog: Promise<T>) => Promise<T>,
 ): Promise<string> {
   for (;;) {
     const targets = listWaitTargets(coordinatorDir, cwd);
@@ -263,16 +277,16 @@ async function pickWaitTarget(
       ctx.ui.notify("No live sessions in this repository — type a session id", "info");
     }
     const labels = targets.map((t) => waitTargetLabel(t, mySessionId));
-    const choice = await ctx.ui.select("Wait for", [...labels, ENTER_SESSION_ID, BACK]);
+    const choice = await step(ctx.ui.select("Wait for", [...labels, ENTER_SESSION_ID, BACK]));
     if (choice === undefined || choice === BACK) return BACK;
 
     const picked = targets[labels.indexOf(choice)];
     if (picked) return picked.sessionId;
 
-    const typed = await ctx.ui.input(
+    const typed = await step(ctx.ui.input(
       "Session ID",
       "Any active session id, even one of another repository",
-    );
+    ));
     const id = (typed ?? "").trim();
     // A dismissed or blank prompt reopens the list instead of abandoning the
     // whole flow, so no collected answer is lost.

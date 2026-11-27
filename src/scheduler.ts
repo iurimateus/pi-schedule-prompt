@@ -27,6 +27,11 @@ const IDLE_RETRY_MS = 5_000;
  *  make a later scheduled run count as the user's. */
 const USER_TURN_START_WINDOW_MS = 5_000;
 
+/** Shortest idle time after a self-paused flow (the wizard) closes. An idle
+ *  job with a shorter interval still waits this long: the user just finished
+ *  typing into the wizard, so firing at once would interrupt them. */
+export const FLOW_IDLE_GRACE_MS = 60_000;
+
 /** How often a process scans shared storage for wait jobs it can deliver. */
 const WAIT_POLL_INTERVAL_MS = 1000;
 
@@ -78,8 +83,19 @@ export class CronScheduler {
    *  is compacting: no agent_settled would follow, and the fire-time
    *  isIdle() check retries until pi is idle. */
   private busy = false;
-  /** A blocking extension dialog (select/confirm/input/editor/custom) is open. */
-  private promptOpen = false;
+  /** Open question dialogs (select/confirm/input/editor) pi reported, counted
+   *  so a nested dialog can't end the pause of the one enclosing it. */
+  private dialogDepth = 0;
+  /** Flows that paused themselves through {@link pauseForDialog} and have not
+   *  resumed yet (e.g. the Jobs add flow, whose dialogs pi reports as part of
+   *  the overlay). Kept apart from {@link dialogDepth}: a flow can start inside
+   *  an open dialog, and a dialog can open inside a paused flow. Either nesting
+   *  order unpauses only when its own count returns to zero. */
+  private flowDepth = 0;
+  /** Idle jobs may not fire before this time (ms epoch; 0 = no floor). Set
+   *  when the last self-paused flow ends, cleared by real user activity, so
+   *  ordinary dialogs outside a flow never see it. */
+  private flowGraceUntil = 0;
   /** Idle jobs that already fired in the current idle stretch. Cleared only by
    *  user input, so a job's own turn (or another job's) can't re-arm it. */
   private firedThisStretch = new Set<string>();
@@ -272,6 +288,7 @@ export class CronScheduler {
    *  and start a new idle stretch. */
   onUserActivity(): void {
     this.firedThisStretch.clear();
+    this.flowGraceUntil = 0;
     this.restartIdleClock();
   }
 
@@ -290,26 +307,52 @@ export class CronScheduler {
    */
   onPromptStart(kind: UIPromptKind): void {
     if (kind === "custom") return;
-    this.pauseForDialog();
-  }
-
-  /** A question dialog is open: pause until {@link resumeAfterDialog}. */
-  pauseForDialog(): void {
-    this.promptOpen = true;
+    this.dialogDepth++;
     this.disarmIdleJobs();
   }
 
-  /** The question dialog closed: unpause and restart the clock. */
+  /** A flow pauses itself: no idle job fires until its matching
+   *  {@link resumeAfterDialog}. Pauses stack, and only the last one unpauses. */
+  pauseForDialog(): void {
+    this.flowDepth++;
+    this.disarmIdleJobs();
+  }
+
+  /** The flow that owns the pause ended: release its pause and, unless another
+   *  pause still holds (a dialog left open over it, or an enclosing flow),
+   *  restart the idle clock. A resume with no flow paused is ignored: it must
+   *  neither grant nor extend the grace a closing flow earns. */
   resumeAfterDialog(): void {
-    this.promptOpen = false;
+    if (this.flowDepth === 0) return;
+    this.flowDepth--;
+    if (this.flowDepth === 0) this.flowGraceUntil = Date.now() + FLOW_IDLE_GRACE_MS;
+    this.releasePause();
+  }
+
+  /** The flow moved to its next step: the user answered a dialog, so restart
+   *  the idle clock. Fired flags stay, so a step can't re-arm a job that fired
+   *  in this stretch (a flow can run inside that job's own turn). */
+  onFlowStep(): void {
     this.restartIdleClock();
   }
 
-  /** The dialog closed. Restarts the clock but does not start a new stretch:
-   *  pi can't tell an answer from a timeout or abort, and a dialog opened by an
-   *  idle job's own turn must not let that job fire again. */
+  /** The dialog pi reported closed. Restarts the clock but does not start a new
+   *  stretch: pi can't tell an answer from a timeout or abort, and a dialog
+   *  opened by an idle job's own turn must not let that job fire again. */
   onPromptEnd(): void {
-    this.resumeAfterDialog();
+    if (this.dialogDepth > 0) this.dialogDepth--;
+    this.releasePause();
+  }
+
+  /** True while a dialog or a self-paused flow must keep idle jobs disarmed. */
+  private get paused(): boolean {
+    return this.dialogDepth > 0 || this.flowDepth > 0;
+  }
+
+  /** Restart the clock only once every pause is gone. */
+  private releasePause(): void {
+    if (this.paused) return;
+    this.restartIdleClock();
   }
 
   private rearmIdleJobs(): void {
@@ -335,13 +378,15 @@ export class CronScheduler {
   }
 
   /** Arm an idle job's timer, due its duration after the later of the user's
-   *  last activity and when the job was scheduled. No-op while busy, while a
-   *  dialog is open, or once it fired in this stretch. An armed timer with the
-   *  same due time is left alone. */
+   *  last activity and when the job was scheduled, but never before the grace
+   *  a closing wizard granted. No-op while busy, while a dialog is open, or
+   *  once it fired in this stretch. An armed timer with the same due time is
+   *  left alone. */
   private armIdleJob(job: CronJob, since: number): void {
-    if (this.busy || this.promptOpen || !job.intervalMs) return;
+    if (this.busy || this.paused || !job.intervalMs) return;
     if (this.firedThisStretch.has(job.id)) return;
-    const fireAt = Math.max(this.lastUserActivity, since) + job.intervalMs;
+    const dueAt = Math.max(this.lastUserActivity, since) + job.intervalMs;
+    const fireAt = Math.max(dueAt, this.flowGraceUntil);
     if (this.idleTimers.get(job.id)?.fireAt === fireAt) return;
     this.clearIdleTimer(job.id);
     this.setIdleTimer(job, fireAt, fireAt - Date.now());

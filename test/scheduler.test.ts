@@ -615,6 +615,125 @@ describe("CronScheduler — idle scheduling", () => {
     scheduler.stop();
   });
 
+  it("a dialog inside the add flow doesn't end the add flow's pause", () => {
+    const { pi, scheduler } = setup();
+    scheduler.start();
+    vi.advanceTimersByTime(5 * MIN);
+    scheduler.pauseForDialog(); // the add flow opens
+    vi.advanceTimersByTime(20 * MIN);
+    scheduler.onPromptStart("input"); // its first dialog opens
+    vi.advanceTimersByTime(5 * MIN);
+    scheduler.onPromptEnd(); // that dialog closes; the add flow goes on
+    vi.advanceTimersByTime(20 * MIN);
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+    scheduler.resumeAfterDialog(); // the add flow ends
+    vi.advanceTimersByTime(10 * MIN - 1);
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
+    scheduler.stop();
+  });
+
+  it("a flow that pauses inside an open dialog keeps that dialog's pause when it ends", () => {
+    const { pi, scheduler } = setup();
+    scheduler.start();
+    vi.advanceTimersByTime(5 * MIN);
+    scheduler.onPromptStart("select"); // a question dialog opens first
+    scheduler.pauseForDialog(); // a flow inside it pauses itself (reverse nesting)
+    scheduler.resumeAfterDialog(); // that flow ends; the dialog is still open
+    vi.advanceTimersByTime(30 * MIN);
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+    scheduler.onPromptEnd(); // the outer dialog closes last
+    vi.advanceTimersByTime(10 * MIN - 1);
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
+    scheduler.stop();
+  });
+
+  it("a wizard step restarts the clock without starting a new stretch", () => {
+    const { pi, scheduler } = setup();
+    scheduler.start();
+    vi.advanceTimersByTime(9 * MIN);
+    scheduler.onFlowStep(); // the wizard moves to its next step
+    vi.advanceTimersByTime(MIN);
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(9 * MIN);
+    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
+
+    // A step is not a new stretch: a job that fired in this one stays fired.
+    scheduler.onFlowStep();
+    vi.advanceTimersByTime(60 * MIN);
+    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
+    scheduler.stop();
+  });
+
+  it("a shorter idle interval still waits 60s after the wizard closes", () => {
+    const { pi, scheduler } = setup([idleJob({ schedule: "10s", intervalMs: 10_000 })]);
+    scheduler.start();
+    scheduler.pauseForDialog(); // the wizard opens
+    vi.advanceTimersByTime(2 * MIN);
+    scheduler.resumeAfterDialog(); // the wizard closes
+    vi.advanceTimersByTime(60_000 - 1);
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
+    scheduler.stop();
+  });
+
+  it("an ordinary dialog outside the wizard keeps its plain restart", () => {
+    const { pi, scheduler } = setup([idleJob({ schedule: "10s", intervalMs: 10_000 })]);
+    scheduler.start();
+    scheduler.onPromptStart("select");
+    vi.advanceTimersByTime(2 * MIN);
+    scheduler.onPromptEnd();
+    vi.advanceTimersByTime(10_000 - 1);
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
+    scheduler.stop();
+  });
+
+  it("user activity ends the wizard grace early", () => {
+    const { pi, scheduler } = setup([idleJob({ schedule: "10s", intervalMs: 10_000 })]);
+    scheduler.start();
+    scheduler.pauseForDialog();
+    vi.advanceTimersByTime(MIN);
+    scheduler.resumeAfterDialog();
+    vi.advanceTimersByTime(10_000);
+    scheduler.onUserActivity(); // the user typed: the wizard grace no longer applies
+    vi.advanceTimersByTime(10_000 - 1);
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
+    scheduler.stop();
+  });
+
+  it("a resume with no flow paused grants no wizard grace", () => {
+    const { pi, scheduler } = setup([idleJob({ schedule: "10s", intervalMs: 10_000 })]);
+    scheduler.start();
+    scheduler.resumeAfterDialog(); // no flow paused: must not add the 60s floor
+    vi.advanceTimersByTime(10_000 - 1);
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
+    scheduler.stop();
+  });
+
+  it("a resume with no flow paused does not disturb a grace already running", () => {
+    const { pi, scheduler } = setup([idleJob({ schedule: "10s", intervalMs: 10_000 })]);
+    scheduler.start();
+    scheduler.pauseForDialog();
+    scheduler.resumeAfterDialog(); // the wizard closes: grace starts now
+    vi.advanceTimersByTime(30_000);
+    scheduler.resumeAfterDialog(); // stray resume: neither clears nor restarts the grace
+    vi.advanceTimersByTime(60_000 - 30_000 - 1);
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
+    scheduler.stop();
+  });
+
   it("closing a dialog restarts the clock but doesn't let a fired job fire again", () => {
     const { pi, scheduler } = setup();
     scheduler.start();

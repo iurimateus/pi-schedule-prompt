@@ -89,7 +89,7 @@ function makeHarness(script: [string, Reply][], opts: { cwd?: string } = {}) {
 
   const addJob = vi.fn();
   const storage = { hasJobWithName: () => false, addJob } as unknown as CronStorage;
-  const scheduler = { addJob: vi.fn() } as unknown as CronScheduler;
+  const scheduler = { addJob: vi.fn(), onFlowStep: vi.fn() } as unknown as CronScheduler;
   const settings: ScheduleSettings = { defaultJobScope: "session" };
   const ctx = { ui, cwd: opts.cwd ?? "/work" } as unknown as ExtensionCommandContext;
 
