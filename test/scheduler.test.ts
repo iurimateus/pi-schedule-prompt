@@ -1680,8 +1680,8 @@ describe("CronScheduler — wait jobs", () => {
       // storage object models the shared on-disk store.
       storage.addJob(waitJob());
 
-      // The target's poller must discover it on the next tick and deliver.
-      vi.advanceTimersByTime(1000);
+      // With no known wait jobs, discovery runs on the 5s idle poll. Once found, polling switches to 1s.
+      vi.advanceTimersByTime(5000);
 
       expect(pi.sendMessage.mock.calls[0][0].details.mode).toBe("wait_delivery");
       expect(pi.sendUserMessage).toHaveBeenCalledWith("do the thing", { deliverAs: "followUp" });

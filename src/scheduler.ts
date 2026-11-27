@@ -34,7 +34,8 @@ export const FLOW_IDLE_GRACE_MS = 60_000;
 const WAIT_SELF_GRACE_MS = 30_000;
 
 /** How often a process scans shared storage for wait jobs it can deliver. */
-const WAIT_POLL_INTERVAL_MS = 1000;
+const WAIT_POLL_IDLE_INTERVAL_MS = 5_000;
+const WAIT_POLL_ACTIVE_INTERVAL_MS = 1000;
 
 /**
  * Whether pi-subagents has a live or queued agent in this process. The global
@@ -111,6 +112,7 @@ export class CronScheduler {
   /** Settles when each in-flight subagent run (including its session teardown) finishes. */
   private inflightSubagents = new Set<Promise<void>>();
   private waitPoll?: NodeJS.Timeout;
+  private stopped = false;
   private readonly storage: CronStorage;
   private readonly pi: ExtensionAPI;
   private readonly ctx: ExtensionContext;
@@ -137,6 +139,7 @@ export class CronScheduler {
    * until the cron next fires. Other sessions' flags are theirs to manage.
    */
   start(): void {
+    this.stopped = false;
     const mySessionId = this.ctx.sessionManager.getSessionId();
     for (const job of this.storage.getAllJobs()) {
       if (!CronScheduler.isLoadedFor(job, mySessionId)) continue;
@@ -147,7 +150,8 @@ export class CronScheduler {
         this.scheduleJob(job);
       }
     }
-    this.startWaitPolling();
+    const localWaits = this.storage.getAllJobs().some((job) => job.type === "wait" && job.enabled && CronScheduler.isLoadedFor(job, mySessionId));
+    this.scheduleWaitPoll(localWaits);
   }
 
   /** Unbound jobs (no `session` field) load for everyone. Wait jobs also load
@@ -171,8 +175,10 @@ export class CronScheduler {
    * processes.
    */
   stop(): Promise<void> {
+    this.stopped = true;
+
     if (this.waitPoll) {
-      clearInterval(this.waitPoll);
+      clearTimeout(this.waitPoll);
       this.waitPoll = undefined;
     }
 
@@ -324,7 +330,6 @@ export class CronScheduler {
     this.flowDepth++;
     this.disarmIdleJobs();
   }
-
   /** The flow that owns the pause ended: release its pause and, unless another
    *  pause still holds (a dialog left open over it, or an enclosing flow),
    *  restart the idle clock. A resume with no flow paused is ignored: it must
@@ -447,7 +452,7 @@ export class CronScheduler {
    */
   private scheduleJob(job: CronJob, idleSince?: number): void {
     // Wait jobs have no clock time: they are delivered by the shared poller
-    // (see `evaluateWaitJobs`), not armed on a timer here.
+    // (see `scheduleWaitPoll`), not armed on a timer here.
     if (job.type === "wait") return;
     try {
       if ((job.type === "interval" || job.type === "idle") && job.intervalMs) {
@@ -545,28 +550,41 @@ export class CronScheduler {
    * only jobs this session targets or owns; `stop()` clears the timer.
    */
   private startWaitPolling(): void {
-    if (this.waitPoll) return;
-    this.waitPoll = setInterval(() => {
-      void this.evaluateWaitJobs();
-    }, WAIT_POLL_INTERVAL_MS);
+    if (this.stopped) return;
+    if (this.waitPoll) clearTimeout(this.waitPoll);
+    this.waitPoll = undefined;
+    this.scheduleWaitPoll(true);
   }
 
-  /**
-   * Scan shared storage for wait jobs this session can deliver. Persisted
-   * storage is the rendezvous: the target process delivers once the target is
-   * settled and this process has no running pi-subagents; a job with
-   * `deliverTo: "owner"` instead makes the creating process wait for the target
-   * and deliver into its own chat; either mode falls back to the owner once the
-   * target has exited.
-   */
-  private evaluateWaitJobs(): void {
+
+  private evaluateWaitJobs(): boolean {
     const mySessionId = this.ctx.sessionManager.getSessionId();
-    for (const job of this.storage.getAllJobs()) {
-      if (job.type !== "wait" || !job.enabled) continue;
-      if (!CronScheduler.isLoadedFor(job, mySessionId)) continue;
+    const relevantJobs = this.storage.getAllJobs().filter(
+      (job) => job.type === "wait" && job.enabled && CronScheduler.isLoadedFor(job, mySessionId),
+    );
+    for (const job of relevantJobs) {
+      if (this.stopped) break;
       this.evaluateWaitJob(job, mySessionId);
     }
+    return relevantJobs.length > 0;
   }
+
+  private scheduleWaitPoll(hasLocalWaitJobs: boolean): void {
+    if (this.stopped || this.waitPoll) return;
+    this.waitPoll = setTimeout(() => {
+      this.waitPoll = undefined;
+      let nextPollHasLocalWaitJobs = hasLocalWaitJobs;
+      try {
+        nextPollHasLocalWaitJobs = this.evaluateWaitJobs();
+      } catch (error) {
+        console.error("Failed to evaluate wait jobs:", error);
+      } finally {
+        if (!this.stopped) this.scheduleWaitPoll(nextPollHasLocalWaitJobs);
+      }
+    }, hasLocalWaitJobs ? WAIT_POLL_ACTIVE_INTERVAL_MS : WAIT_POLL_IDLE_INTERVAL_MS);
+  }
+
+
 
   private evaluateWaitJob(job: CronJob, mySessionId: string | undefined): void {
     const deliversToOwner = job.deliverTo === "owner";

@@ -296,6 +296,10 @@ interface SchedulePromptApi {
 - Disable or remove the job before delivery to cancel it.
 - Disabled-job cleanup removes it on the next session start or shutdown. You can also remove the job explicitly.
 
+### Wait timing
+
+Self-wait delivery into the local session waits 30 seconds after a matching dialog closes. Idle-job scheduling keeps its separate 60-second grace after a completed wizard. External wait jobs are discovered within at most 5 seconds; once a relevant wait job exists, polling runs every 1 second.
+
 ### Guarantees
 
 - **One delivery.** A self-wait delivers one prompt, into the session that hosts the extension. The delivering process disables the job before it sends the prompt, so a later poll tick in that process cannot re-deliver it. The claim uses the shared store without a lock, so two processes that host the same session id can still both deliver.
