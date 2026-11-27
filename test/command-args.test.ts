@@ -26,6 +26,7 @@ vi.mock("../src/scheduler.js", () => {
 vi.mock("../src/storage.js", () => {
   return {
     CronStorage: class {
+      migrateLegacy = () => "none";
       getAllJobs = () => jobs;
       removeJob = vi.fn();
     },
@@ -139,7 +140,7 @@ describe("/schedule-prompt <arg>", () => {
     await s.run("hide");
 
     expect(s.ctx.ui.select).not.toHaveBeenCalled();
-    expect(saveSettingsMock).toHaveBeenCalledWith(s.ctx.cwd, { jobsVisible: false });
+    expect(saveSettingsMock).toHaveBeenCalledWith(s.ctx.cwd, { jobsVisible: false }, false);
     expect(s.ctx.ui.notify).toHaveBeenCalledWith(
       "Jobs hidden (1 job) — /schedule-prompt show to expand",
       "info",
@@ -156,7 +157,7 @@ describe("/schedule-prompt <arg>", () => {
     await s.run("show");
 
     expect(s.ctx.ui.select).not.toHaveBeenCalled();
-    expect(saveSettingsMock).toHaveBeenCalledWith(s.ctx.cwd, { jobsVisible: true });
+    expect(saveSettingsMock).toHaveBeenCalledWith(s.ctx.cwd, { jobsVisible: true }, false);
     expect(s.ctx.ui.notify).toHaveBeenCalledWith("Jobs shown (2 jobs)", "info");
     expect(s.h.activeTools()).toContain("schedule_prompt");
   });
@@ -165,7 +166,7 @@ describe("/schedule-prompt <arg>", () => {
     oneJob();
     const s = await startSession();
     await s.run("toggle");
-    expect(saveSettingsMock).toHaveBeenLastCalledWith(s.ctx.cwd, { jobsVisible: false });
+    expect(saveSettingsMock).toHaveBeenLastCalledWith(s.ctx.cwd, { jobsVisible: false }, false);
     expect(s.ctx.ui.notify).toHaveBeenLastCalledWith(
       "Jobs hidden (1 job) — /schedule-prompt show to expand",
       "info",
@@ -173,7 +174,7 @@ describe("/schedule-prompt <arg>", () => {
 
     // Second run flips back without re-reading settings from disk.
     await s.run("toggle");
-    expect(saveSettingsMock).toHaveBeenLastCalledWith(s.ctx.cwd, { jobsVisible: true });
+    expect(saveSettingsMock).toHaveBeenLastCalledWith(s.ctx.cwd, { jobsVisible: true }, false);
     expect(s.ctx.ui.notify).toHaveBeenLastCalledWith("Jobs shown (1 job)", "info");
     expect(loadSettingsMock).toHaveBeenCalledTimes(1);
   });
@@ -182,7 +183,7 @@ describe("/schedule-prompt <arg>", () => {
     const s = await startSession({ jobsVisible: false });
     await s.run("toggle");
 
-    expect(saveSettingsMock).toHaveBeenCalledWith(s.ctx.cwd, { jobsVisible: true });
+    expect(saveSettingsMock).toHaveBeenCalledWith(s.ctx.cwd, { jobsVisible: true }, false);
     expect(s.ctx.ui.notify).toHaveBeenCalledWith("Jobs shown (0 jobs)", "info");
   });
 
@@ -247,7 +248,7 @@ describe("/schedule-prompt — Settings submenu", () => {
       .mockResolvedValueOnce("Back");
     await s.run("");
 
-    expect(saveSettingsMock).toHaveBeenCalledWith(s.ctx.cwd, { jobsVisible: false });
+    expect(saveSettingsMock).toHaveBeenCalledWith(s.ctx.cwd, { jobsVisible: false }, false);
     expect(s.widget().show.mock.calls.length).toBe(showCallsBefore + 1);
     expect(s.ctx.ui.notify).not.toHaveBeenCalled();
   });

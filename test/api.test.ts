@@ -14,7 +14,7 @@ vi.mock("../src/scheduler.js", () => ({
   CronScheduler: class {
     static isLoadedFor = () => true;
     start = vi.fn();
-    stop = vi.fn();
+    stop = vi.fn(async () => {});
     addJob = vi.fn();
     constructor() {
       schedulerInstances.push(this);
@@ -25,6 +25,7 @@ vi.mock("../src/scheduler.js", () => ({
 vi.mock("../src/storage.js", () => ({
   CronStorage: class {
     getAllJobs = vi.fn(() => []);
+    migrateLegacy = vi.fn(() => "none");
     removeJob = vi.fn();
     addJobDeduped = vi.fn((job: any) => ({ ok: true, job, added: true }));
     constructor() {

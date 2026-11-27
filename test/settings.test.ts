@@ -55,7 +55,7 @@ describe("ScheduleSettings — sanitize", () => {
 
   it.each([true, false])("accepts jobsVisible=%s", (jobsVisible) => {
     writeProjectSettings({ jobsVisible });
-    expect(loadSettings(cwd).jobsVisible).toBe(jobsVisible);
+    expect(loadSettings(cwd, true).jobsVisible).toBe(jobsVisible);
   });
 
   it("drops a non-boolean jobsVisible", () => {
@@ -65,7 +65,7 @@ describe("ScheduleSettings — sanitize", () => {
 
   it("preserves jobsVisible alongside widgetVisible and defaultJobScope", () => {
     writeProjectSettings({ widgetVisible: false, jobsVisible: false, defaultJobScope: "workdir" });
-    expect(loadSettings(cwd)).toEqual({
+    expect(loadSettings(cwd, true)).toEqual({
       widgetVisible: false,
       jobsVisible: false,
       defaultJobScope: "workdir",

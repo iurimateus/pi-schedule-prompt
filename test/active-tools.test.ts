@@ -9,7 +9,7 @@ vi.mock("../src/scheduler.js", () => {
     CronScheduler: class {
       static isLoadedFor = () => true;
       start = vi.fn();
-      stop = vi.fn();
+      stop = vi.fn(async () => {});
       addJob = vi.fn();
       removeJob = vi.fn();
       updateJob = vi.fn();
@@ -21,6 +21,7 @@ vi.mock("../src/scheduler.js", () => {
 vi.mock("../src/storage.js", () => {
   return {
     CronStorage: class {
+      migrateLegacy = () => "none";
       getAllJobs = () => [];
       removeJob = vi.fn();
     },
